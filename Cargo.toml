@@ -1,0 +1,65 @@
+[package]
+name = "csan"
+version = "1511.26.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+egui = "=0.29.1"
+eframe = { version = "=0.29.1", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.14"
+log = "0.4"
+jni = "0.21"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[package.metadata.android]
+package = "zanq.fun.camera"
+apk_name = "CSan"
+version_name = "1511.26"
+version_code = 26111501
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 29
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "CSan"
+extract_native_libs = true
+
+[package.metadata.android.application.activity]
+orientation = "portrait"
+config_changes = "orientation|keyboardHidden|screenSize"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.CAMERA"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.POST_NOTIFICATIONS"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MODIFY_AUDIO_SETTINGS"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.HIGH_SAMPLING_RATE_SENSORS"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_AUDIO"
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.camera"
+required = false
