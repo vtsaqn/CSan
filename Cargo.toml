@@ -1,6 +1,6 @@
 [package]
 name = "csan"
-version = "1511.26.0"
+version = "1511.26.1"
 edition = "2021"
 
 [lib]
@@ -25,8 +25,8 @@ strip = true
 [package.metadata.android]
 package = "zanq.fun.camera"
 apk_name = "CSan"
-version_name = "1511.26"
-version_code = 26111501
+version_name = "1511.26.1"
+version_code = 26111502
 build_targets = ["aarch64-linux-android"]
 
 [package.metadata.android.sdk]
