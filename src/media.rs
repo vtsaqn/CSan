@@ -110,6 +110,7 @@ impl Player {
         });
     }
 
+    #[allow(dead_code)]
     pub fn pos_ms(&self) -> i64 {
         let o = self.obj.clone();
         with_env(&self.app, move |env, _| Ok(env.call_method(&o, "getCurrentPosition", "()I", &[])?.i()? as i64)).unwrap_or(0)
