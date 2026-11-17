@@ -1,6 +1,6 @@
 [package]
 name = "csan"
-version = "26.11.15-3"
+version = "26.11.17"
 edition = "2021"
 
 # Lưu ý: cargo-apk tự suy versionName/versionCode từ "version" (dạng YY.MM.DD, mỗi số <= 255) và
@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 egui = "=0.29.1"
 eframe = { version = "=0.29.1", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
 log = "0.4"
@@ -25,7 +26,7 @@ codegen-units = 4
 strip = true
 
 [package.metadata.csan]
-display_version = "1511.26.3"
+display_version = "1711.26"
 
 [package.metadata.android]
 package = "zanq.fun.camera"

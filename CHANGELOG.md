@@ -1,6 +1,10 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1711.26 — 17/11/2026
+- Sửa lỗi biên dịch: eframe 0.29.1 không có `NativeOptions::android_app`; chuyển sang `event_loop_builder` + `with_android_app` của winit (thêm phụ thuộc `winit` 0.30 với `android-native-activity`).
+- Ghi rõ kiểu f32 cho các `Stroke::new` để hết cảnh báo của trình biên dịch mới.
+
 ## 1511.26.3 — 15/11/2026
 - Sửa lỗi build: cargo-apk 0.10 không cho đặt version_name/version_code trong Cargo.toml. Bỏ hai dòng đó; `version` Cargo đổi sang YY.MM.DD (26.11.15-3) để cargo-apk tự suy versionCode tăng đúng theo ngày; số hiển thị 1511.26.3 nằm ở `display_version` (dùng cho tiêu đề app và tên APK).
 
