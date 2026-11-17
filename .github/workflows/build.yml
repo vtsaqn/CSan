@@ -82,7 +82,12 @@ jobs:
           V=$(grep -m1 '^display_version' Cargo.toml | cut -d'"' -f2)
           echo "v=$V" >> "$GITHUB_OUTPUT"
           mkdir -p dist
-          cp target/release/apk/*.apk "dist/CSan-$V.apk"
+          ls -la target/release/apk/ || true
+          # chọn đúng 1 tệp APK (ưu tiên CSan.apk, nếu không thì tệp lớn nhất)
+          APK=target/release/apk/CSan.apk
+          if [ ! -f "$APK" ]; then APK=$(ls -S target/release/apk/*.apk | head -n 1); fi
+          echo "Dùng: $APK"
+          cp "$APK" "dist/CSan-$V.apk"
 
       - uses: actions/upload-artifact@v4
         with:
