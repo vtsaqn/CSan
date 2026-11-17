@@ -12,6 +12,7 @@ mod tik;
 mod video;
 
 use android_activity::AndroidApp;
+use winit::platform::android::EventLoopBuilderExtAndroid;
 use cfg::Cfg;
 use eframe::egui;
 use std::path::PathBuf;
@@ -25,7 +26,13 @@ const MIC_PERM: &str = "android.permission.RECORD_AUDIO";
 #[no_mangle]
 fn android_main(app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("csan"));
-    let options = eframe::NativeOptions { android_app: Some(app.clone()), ..Default::default() };
+    let app2 = app.clone();
+    let options = eframe::NativeOptions {
+        event_loop_builder: Some(Box::new(move |builder| {
+            builder.with_android_app(app2);
+        })),
+        ..Default::default()
+    };
     let r = eframe::run_native("CSan", options, Box::new(move |_cc| Ok(Box::new(App::new(app)))));
     if let Err(e) = r {
         log::error!("run_native: {}", e);
@@ -911,14 +918,14 @@ impl eframe::App for App {
                     let c = rect.center();
                     let painter = ui.painter();
                     if self.is_video() {
-                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0, egui::Color32::WHITE));
+                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
                         if recording {
                             painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(34.0, 34.0)), 6.0, egui::Color32::RED);
                         } else {
                             painter.circle_filled(c, 30.0, egui::Color32::RED);
                         }
                     } else {
-                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0, egui::Color32::WHITE));
+                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
                         let r = if resp.is_pointer_button_down_on() { 28.0 } else { 32.0 };
                         painter.circle_filled(c, r, egui::Color32::WHITE);
                     }
@@ -959,7 +966,7 @@ impl eframe::App for App {
                 }
                 let painter = ui.painter();
                 if self.s.grid && rect.width() > 1.0 {
-                    let st = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(110));
+                    let st = egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(110));
                     for i in 1..3 {
                         let fx = rect.min.x + rect.width() * i as f32 / 3.0;
                         let fy = rect.min.y + rect.height() * i as f32 / 3.0;
@@ -976,7 +983,7 @@ impl eframe::App for App {
                             if off.length() > 60.0 {
                                 off = off.normalized() * 60.0;
                             }
-                            painter.circle_stroke(c, 60.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+                            painter.circle_stroke(c, 60.0, egui::Stroke::new(1.5_f32, egui::Color32::WHITE));
                             let ok = off.length() < 4.0;
                             painter.circle_filled(c + off, 10.0, if ok { egui::Color32::GREEN } else { egui::Color32::YELLOW });
                         } else {
@@ -984,14 +991,14 @@ impl eframe::App for App {
                             let d = egui::vec2(ang.cos(), ang.sin()) * (rect.width() * 0.22);
                             let ok = roll.abs() < 1.0;
                             let col = if ok { egui::Color32::GREEN } else { egui::Color32::WHITE };
-                            painter.line_segment([c - d, c + d], egui::Stroke::new(2.5, col));
+                            painter.line_segment([c - d, c + d], egui::Stroke::new(2.5_f32, col));
                             painter.text(c + egui::vec2(0.0, 18.0), egui::Align2::CENTER_TOP, format!("{:.0}°", roll), egui::FontId::proportional(14.0), col);
                         }
                     }
                 }
                 if let Some((p, t0)) = self.focus_ring {
                     if t0.elapsed() < Duration::from_millis(1000) {
-                        painter.circle_stroke(p, 34.0, egui::Stroke::new(2.0, egui::Color32::YELLOW));
+                        painter.circle_stroke(p, 34.0, egui::Stroke::new(2.0_f32, egui::Color32::YELLOW));
                     } else {
                         self.focus_ring = None;
                     }
