@@ -21,7 +21,7 @@ Live: ảnh động (Motion Photo). Video: H.264/HEVC + âm thanh (mic chính), 
 TikTok: chọn/cắt nhạc, đổi tốc độ, ghép nhạc.
 
 ## Chưa có / không port
-- Camera API 1 và CameraX: cần thư viện Java/AndroidX nên không làm được trong APK Rust thuần. Đã có chế độ tương thích tự động.
+- CameraX: bỏ. Camera API 1: để sau (hiện có chế độ tương thích tự động khi Camera2 lỗi).
 - Live định dạng HEIC (HeifXmp), màn hình MoreSettings.
 
 ## Lưu ý
@@ -29,4 +29,4 @@ TikTok: chọn/cắt nhạc, đổi tốc độ, ghép nhạc.
 - Một số mã khoá metadata Camera2 viết theo header NDK; máy nào không nhận thì tính năng đó bị bỏ qua.
 - Live cần máy cho phép 3 luồng cùng lúc (xem trước + JPEG + mã hóa); nếu không, chế độ LIVE báo lỗi.
 - TikTok/nhạc cần cấp quyền đọc âm thanh; bấm "Làm mới" trong danh sách nhạc sau khi cấp quyền.
-- Ảnh/video lưu ở `Android/data/zanq.fun.camera/files/` (chưa vào thư viện ảnh).
+- Ảnh/video lưu ở thư viện máy: DCIM/Csan. Tệp tạm và config.txt nằm ở `Android/data/zanq.fun.camera/files/`.

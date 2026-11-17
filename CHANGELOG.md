@@ -1,6 +1,18 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1711.26.3 — 17/11/2026
+- Thêm icon ứng dụng (máy ảnh, đủ các độ phân giải mipmap).
+- Ảnh và video lưu vào thư viện máy ở DCIM/Csan (qua MediaStore, không cần thêm quyền); xong thì xoá bản tạm trong thư mục app. Nếu không ghi được thì giữ tệp trong thư mục app và báo lý do.
+- Zoom mượt: chụm 2 ngón hoặc bấm nút 1x/2x/3x/5x chỉ đổi mục tiêu, hệ số zoom trượt dần theo từng khung hình.
+- Bỏ CameraX khỏi kế hoạch; Camera API 1 để sau.
+
+## 1711.26.2 — 17/11/2026
+- Sửa font: đính kèm DejaVu Sans (đủ dấu tiếng Việt), hết ô vuông.
+- Sửa xem trước bị xoay ngang: bỏ đọc mã khoá SENSOR_ORIENTATION (đọc sai → 0); dùng 90° (sau) / 270° (trước), thêm mục "Xoay xem trước/ảnh thêm" trong Cài đặt để chỉnh nếu máy khác.
+- TikTok: tốc độ và thời lượng chuyển thành nút chọn luôn hiện ở phía dưới; danh sách nhạc báo rõ lỗi JNI/quyền và tự quét thư mục Music/Download… nếu MediaStore trống.
+- Nút thanh trên to hơn ~20%.
+
 ## 1711.26.1 — 17/11/2026
 - Sửa bước đặt tên APK trong workflow (cp lỗi khi có nhiều tệp khớp `*.apk`): chọn đúng `CSan.apk`, in danh sách thư mục để chẩn đoán. Build + ký APK đã thành công.
 - Bỏ cảnh báo `pos_ms` không dùng.
