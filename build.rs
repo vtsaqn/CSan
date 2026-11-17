@@ -3,7 +3,7 @@ fn main() {
     let t = std::fs::read_to_string("Cargo.toml").unwrap_or_default();
     let v = t
         .lines()
-        .find(|l| l.trim_start().starts_with("version_name"))
+        .find(|l| l.trim_start().starts_with("display_version"))
         .and_then(|l| l.split('"').nth(1))
         .unwrap_or("?")
         .to_string();

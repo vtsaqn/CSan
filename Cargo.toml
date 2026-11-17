@@ -1,10 +1,10 @@
 [package]
 name = "csan"
-version = "15.11.26-2"
+version = "26.11.15-3"
 edition = "2021"
 
-# Lưu ý: "version" của Cargo phải dạng DD.MM.YY (mỗi số <= 255) vì cargo-apk suy versionCode từ đây.
-# Phiên bản hiển thị theo ngày (DDMM.YY) nằm ở version_name bên dưới.
+# Lưu ý: cargo-apk tự suy versionName/versionCode từ "version" (dạng YY.MM.DD, mỗi số <= 255) và
+# từ chối version_name/version_code đặt tay. Phiên bản hiển thị theo ngày (DDMM.YY) nằm ở display_version.
 [lib]
 crate-type = ["cdylib"]
 
@@ -24,11 +24,12 @@ lto = "thin"
 codegen-units = 4
 strip = true
 
+[package.metadata.csan]
+display_version = "1511.26.3"
+
 [package.metadata.android]
 package = "zanq.fun.camera"
 apk_name = "CSan"
-version_name = "1511.26.2"
-version_code = 26111503
 build_targets = ["aarch64-linux-android"]
 
 [package.metadata.android.sdk]

@@ -1,6 +1,9 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1511.26.3 — 15/11/2026
+- Sửa lỗi build: cargo-apk 0.10 không cho đặt version_name/version_code trong Cargo.toml. Bỏ hai dòng đó; `version` Cargo đổi sang YY.MM.DD (26.11.15-3) để cargo-apk tự suy versionCode tăng đúng theo ngày; số hiển thị 1511.26.3 nằm ở `display_version` (dùng cho tiêu đề app và tên APK).
+
 ## 1511.26.2 — 15/11/2026
 - Sửa lỗi build "Invalid semver": cargo-apk chỉ nhận phiên bản Cargo có mỗi số <= 255, nên `version` trong Cargo.toml đổi sang dạng DD.MM.YY (15.11.26-2); phiên bản hiển thị 1511.26.2 nằm ở `version_name`. App và tên APK vẫn dùng 1511.26.2.
 
