@@ -1,5 +1,6 @@
 mod cam;
 mod cfg;
+mod export;
 mod hdr;
 mod heic;
 mod level;
@@ -33,10 +34,26 @@ fn android_main(app: AndroidApp) {
         })),
         ..Default::default()
     };
-    let r = eframe::run_native("CSan", options, Box::new(move |_cc| Ok(Box::new(App::new(app)))));
+    let r = eframe::run_native("CSan", options, Box::new(move |cc| {
+            setup_fonts(&cc.egui_ctx);
+            Ok(Box::new(App::new(app)))
+        }));
     if let Err(e) = r {
         log::error!("run_native: {}", e);
     }
+}
+
+/// Font DejaVu có đủ dấu tiếng Việt (font mặc định của egui thiếu nên hiện ô vuông).
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("vn".to_owned(), egui::FontData::from_static(include_bytes!("../assets/DejaVuSans.ttf")).into());
+    if let Some(v) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        v.insert(0, "vn".to_owned());
+    }
+    if let Some(v) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        v.push("vn".to_owned());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Toàn bộ cài đặt (lưu trong config.txt, cùng tên khoá với app Java khi có).
@@ -69,6 +86,7 @@ struct Set {
     lc: i32,
     tikd: i32,
     tiks: i32,
+    prot: i32,
 }
 
 impl Set {
@@ -101,6 +119,7 @@ impl Set {
             lc: c.int("lc", 0) as i32,
             tikd: c.int("tikd", 1) as i32,
             tiks: c.int("tiks", 2) as i32,
+            prot: c.int("prot", 0) as i32,
         }
     }
     fn store(&self, c: &mut Cfg) {
@@ -132,12 +151,25 @@ impl Set {
         c.set("lc", self.lc.to_string());
         c.set("tikd", self.tikd.to_string());
         c.set("tiks", self.tiks.to_string());
+        c.set("prot", self.prot.to_string());
     }
 }
 
 const TIMERS: [u64; 3] = [0, 3, 10];
 const TIKD: [i64; 3] = [15, 30, 60];
 const SPD: [f32; 5] = [3.0, 2.0, 1.0, 0.5, 0.25];
+
+fn base_name(p: &std::path::Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// Đưa tệp vào DCIM/Csan và báo kết quả qua `set`.
+fn publish_and_report(j: export::Jvm, p: &std::path::Path, label: &str, set: &dyn Fn(&str)) {
+    match export::publish(j, p, true) {
+        Ok(n) => set(&format!("Đã lưu {} → DCIM/Csan/{}", label, n)),
+        Err(e) => set(&format!("Đã lưu {} trong thư mục app ({}); chưa vào thư viện ảnh: {}", label, base_name(p), e)),
+    }
+}
 
 fn fmt_clock(ms: i64) -> String {
     let s = (ms / 1000).max(0);
@@ -191,7 +223,10 @@ struct App {
     compat: bool,
     live_pend: Option<LivePend>,
     tracks: Vec<media::Track>,
+    zoom_t: f32,
+    zoom_c: f32,
     music_open: bool,
+    music_msg: String,
     filter: String,
     sel: Option<media::Track>,
     tik_start_ms: i64,
@@ -237,7 +272,10 @@ impl App {
             compat: false,
             live_pend: None,
             tracks: Vec::new(),
+            zoom_t: 1.0,
+            zoom_c: 1.0,
             music_open: false,
+            music_msg: String::new(),
             filter: String::new(),
             sel: None,
             tik_start_ms: 0,
@@ -265,6 +303,8 @@ impl App {
     }
 
     fn reopen(&mut self) {
+        self.zoom_t = 1.0;
+        self.zoom_c = 1.0;
         self.cam = None;
         self.open_err = None;
         self.tex = None;
@@ -287,6 +327,7 @@ impl App {
             live: self.mode == 1,
             live_hevc: self.s.lc == 1,
             compat: self.compat,
+            rot_extra: self.s.prot.clamp(0, 3) * 90,
         }
     }
 
@@ -308,6 +349,7 @@ impl App {
     }
 
     fn spawn_save(&self, jpegs: Vec<Vec<u8>>, is_hdr: bool) {
+        let jv = export::Jvm::from_app(&self.droid);
         let cfg = self.cfg.clone();
         let dir = self.dir.clone();
         let st = self.status.clone();
@@ -331,13 +373,14 @@ impl App {
                 photo::save_jpeg(&cfg, &dir, jpegs.into_iter().next().unwrap_or_default(), rot, &mut prog)
             };
             match r {
-                Ok(p) => set(&format!("Đã lưu {}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())),
+                Ok(p) => publish_and_report(jv, &p, "ảnh", &set),
                 Err(e) => set(&format!("Lỗi lưu ảnh: {}", e)),
             }
         });
     }
 
     fn spawn_live(&self, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32)>) {
+        let jv = export::Jvm::from_app(&self.droid);
         let cfg = self.cfg.clone();
         let dir = self.dir.clone();
         let st = self.status.clone();
@@ -355,13 +398,14 @@ impl App {
                 }
             };
             match photo::save_live(&cfg, &dir, jpeg, clip, &mut prog) {
-                Ok(p) => set(&format!("Đã lưu Live {}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())),
+                Ok(p) => publish_and_report(jv, &p, "ảnh Live", &set),
                 Err(e) => set(&format!("Lỗi lưu Live: {}", e)),
             }
         });
     }
 
     fn spawn_tik(&self, path: PathBuf, job: TikJob) {
+        let jv = export::Jvm::from_app(&self.droid);
         let st = self.status.clone();
         let orient = self.cam.as_ref().map(|c| c.info.sensor_ori).unwrap_or(90);
         std::thread::spawn(move || {
@@ -377,11 +421,12 @@ impl App {
             match tik::run(&path, &dst, job.speed, music.as_deref(), job.start_us, job.seg_us, orient) {
                 Ok(_) => {
                     let _ = std::fs::remove_file(&path);
-                    set("Đã lưu video TikTok");
+                    publish_and_report(jv, &dst, "video TikTok", &set);
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&dst);
                     set(&format!("Lỗi xử lý TikTok: {} (giữ video gốc)", e));
+                    publish_and_report(jv, &path, "video gốc", &set);
                 }
             }
         });
@@ -420,13 +465,31 @@ impl App {
             perm::request(&self.droid, &perms);
             self.set_status("Hãy cấp quyền đọc nhạc rồi bấm Làm mới");
         }
-        self.tracks = media::list_tracks(&self.droid);
+        let (t, msg) = media::list_tracks(&self.droid);
+        self.tracks = t;
         if self.tracks.is_empty() {
-            self.set_status("Không thấy bài nhạc nào (hoặc chưa cấp quyền)");
+            self.music_msg = format!("Không thấy bài nhạc nào. {}", msg);
+            self.set_status(&self.music_msg.clone());
+        } else {
+            self.music_msg = format!("Tìm thấy {} bài", self.tracks.len());
         }
     }
 
+    fn spawn_publish(&self, path: PathBuf) {
+        let jv = export::Jvm::from_app(&self.droid);
+        let st = self.status.clone();
+        std::thread::spawn(move || {
+            let set = |m: &str| {
+                if let Ok(mut g) = st.lock() {
+                    *g = m.to_string();
+                }
+            };
+            publish_and_report(jv, &path, "video", &set);
+        });
+    }
+
     fn spawn_stab(&self, path: PathBuf) {
+        let jv = export::Jvm::from_app(&self.droid);
         let cfg = self.cfg.clone();
         let st = self.status.clone();
         std::thread::spawn(move || {
@@ -454,11 +517,20 @@ impl App {
                     let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                     let o = path.with_file_name(format!("{}_stab.mp4", stem));
                     match std::fs::write(&o, b) {
-                        Ok(_) => set(&format!("Đã lưu video ổn định {}", o.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())),
-                        Err(e) => set(&format!("Ghi video lỗi: {}", e)),
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&path);
+                            publish_and_report(jv, &o, "video ổn định", &set);
+                        }
+                        Err(e) => {
+                            set(&format!("Ghi video lỗi: {}", e));
+                            publish_and_report(jv, &path, "video gốc", &set);
+                        }
                     }
                 }
-                Err(e) => set(&format!("Server ổn định lỗi, giữ video gốc: {}", e)),
+                Err(e) => {
+                    set(&format!("Server ổn định lỗi, giữ video gốc: {}", e));
+                    publish_and_report(jv, &path, "video gốc", &set);
+                }
             }
         });
     }
@@ -710,6 +782,8 @@ impl App {
                         self.spawn_tik(p, job);
                     } else if self.s.stab && !self.s.url.trim().is_empty() {
                         self.spawn_stab(p);
+                    } else {
+                        self.spawn_publish(p);
                     }
                 }
                 Some(Err(e)) => self.set_status(&format!("Lỗi quay: {}", e)),
@@ -795,13 +869,27 @@ impl eframe::App for App {
         self.tick();
         self.upload_frame(ctx);
 
-        // chụm 2 ngón để zoom
+        // zoom mượt: chụm 2 ngón / bấm nút chỉ đổi mục tiêu, giá trị thật trượt dần theo từng khung hình
         let zd = ctx.input(|i| i.zoom_delta());
-        if (zd - 1.0).abs() > 0.002 {
-            if let Some(c) = self.cam.as_mut() {
-                let z = c.ctl.zoom * zd;
-                c.set_zoom(z);
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.1);
+        if let Some(c) = self.cam.as_mut() {
+            let maxz = c.info.max_zoom.max(1.0);
+            if (zd - 1.0).abs() > 0.002 {
+                self.zoom_t = self.zoom_t * zd;
             }
+            self.zoom_t = self.zoom_t.clamp(1.0, maxz);
+            let k = 1.0 - (-dt * 10.0).exp();
+            let mut nz = self.zoom_c + (self.zoom_t - self.zoom_c) * k;
+            if (self.zoom_t - nz).abs() < 0.004 {
+                nz = self.zoom_t;
+            }
+            if (nz - self.zoom_c).abs() > 0.0005 {
+                self.zoom_c = nz;
+                c.set_zoom(nz);
+            }
+        } else {
+            self.zoom_t = 1.0;
+            self.zoom_c = 1.0;
         }
 
         let recording = self.cam.as_ref().map(|c| c.rec.is_some()).unwrap_or(false);
@@ -810,8 +898,10 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(22.0);
+            ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(16.8));
+            ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
             ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("CSan {}", env!("CSAN_VERSION")));
+                ui.label(egui::RichText::new(format!("CSan {}", env!("CSAN_VERSION"))).strong().size(16.8));
                 if !self.is_video() && !recording {
                     let f = ["Tắt", "Tự động", "Bật"][self.s.flash.clamp(0, 2) as usize];
                     if ui.button(format!("⚡ {}", f)).clicked() {
@@ -837,25 +927,6 @@ impl eframe::App for App {
                     self.settings_open = !self.settings_open;
                 }
             });
-            if self.mode == 3 && !recording {
-                ui.horizontal_wrapped(|ui| {
-                    let label = match &self.sel {
-                        Some(t) => format!("♪ {} • {} → {}", t.title, fmt_clock(self.tik_start_ms), fmt_clock(self.tik_start_ms + self.tik_seg_ms)),
-                        None => "♪ Chọn nhạc ›".to_string(),
-                    };
-                    if ui.button(label).clicked() {
-                        self.music_open = true;
-                        if self.tracks.is_empty() {
-                            self.load_tracks();
-                        }
-                    }
-                    if self.sel.is_some() && ui.button("✕").clicked() {
-                        self.sel = None;
-                    }
-                    s_changed |= combo(ui, "Thời lượng", &mut self.s.tikd, &["15 giây", "30 giây", "60 giây"]);
-                    s_changed |= combo(ui, "Tốc độ", &mut self.s.tiks, &["3x", "2x", "1x", "0,5x", "0,25x"]);
-                });
-            }
         });
 
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
@@ -870,6 +941,7 @@ impl eframe::App for App {
                 }
             });
             // thanh zoom
+            let mut zt_set: Option<f32> = None;
             if let Some(c) = self.cam.as_mut() {
                 let maxz = c.info.max_zoom;
                 let cur = c.ctl.zoom;
@@ -881,13 +953,53 @@ impl eframe::App for App {
                         }
                         let sel = (cur - z).abs() < 0.15;
                         if ui.selectable_label(sel, format!("{}x", z)).clicked() {
-                            c.set_zoom(z);
+                            zt_set = Some(z);
                         }
                     }
                     ui.label(format!("{:.1}x", cur));
                 });
             }
-            // chế độ Ảnh / Video
+            if let Some(z) = zt_set {
+                self.zoom_t = z;
+            }
+            // TikTok: nhạc + tốc độ + thời lượng (dạng nút chọn, luôn hiện)
+            if self.mode == 3 && !recording {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(8.0);
+                    let label = match &self.sel {
+                        Some(t) => format!("♪ {}  {} → {}", t.title, fmt_clock(self.tik_start_ms), fmt_clock(self.tik_start_ms + self.tik_seg_ms)),
+                        None => "♪ Chọn nhạc ›".to_string(),
+                    };
+                    if ui.button(label).clicked() {
+                        self.music_open = true;
+                        self.load_tracks();
+                    }
+                    if self.sel.is_some() && ui.button("✕").clicked() {
+                        self.sel = None;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Tốc độ:");
+                    for (i, n) in ["3x", "2x", "1x", "0,5x", "0,25x"].iter().enumerate() {
+                        if ui.selectable_label(self.s.tiks == i as i32, *n).clicked() {
+                            self.s.tiks = i as i32;
+                            s_changed = true;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Thời lượng:");
+                    for (i, n) in ["15 giây", "30 giây", "60 giây"].iter().enumerate() {
+                        if ui.selectable_label(self.s.tikd == i as i32, *n).clicked() {
+                            self.s.tikd = i as i32;
+                            s_changed = true;
+                        }
+                    }
+                });
+            }
+            // chế độ Ảnh / Live / Video / TikTok
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 if !recording {
@@ -1030,6 +1142,9 @@ impl eframe::App for App {
         let mut refresh = false;
         let mut mo = self.music_open;
         egui::Window::new("Chọn nhạc").open(&mut mo).show(ctx, |ui| {
+            if !self.music_msg.is_empty() {
+                ui.label(self.music_msg.clone());
+            }
             ui.horizontal(|ui| {
                 let r = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Tìm bài hát…"));
                 if r.gained_focus() {
@@ -1124,6 +1239,7 @@ impl eframe::App for App {
             s_changed |= combo(ui, "Chụp đêm", &mut self.s.night, &["Tắt", "Tự động", "Bật"]);
             s_changed |= combo(ui, "Flash", &mut self.s.flash, &["Tắt", "Tự động", "Bật"]);
             s_changed |= ui.checkbox(&mut self.s.grid, "Hiện lưới").changed();
+            reopen |= combo(ui, "Xoay xem trước/ảnh thêm", &mut self.s.prot, &["0°", "90°", "180°", "270°"]);
             s_changed |= ui.add(egui::Slider::new(&mut self.s.pden, 0..=100).text("Khử nhiễu (server)")).changed();
             s_changed |= ui.add(egui::Slider::new(&mut self.s.psharp, 0..=100).text("Làm nét (server)")).changed();
             s_changed |= ui.checkbox(&mut self.s.send, "Gửi ảnh lên server khử nhiễu").changed();

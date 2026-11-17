@@ -26,9 +26,33 @@ fn jstr(env: &mut JNIEnv, o: JObject) -> String {
     env.get_string(&s).map(|j| j.into()).unwrap_or_default()
 }
 
-/// Liệt kê nhạc trên máy (cần quyền đọc âm thanh).
-pub fn list_tracks(app: &AndroidApp) -> Vec<Track> {
-    with_env(app, |env, act| {
+pub fn describe(env: &mut JNIEnv, e: &jni::errors::Error) -> String {
+    if let jni::errors::Error::JavaException = e {
+        if let Ok(t) = env.exception_occurred() {
+            let _ = env.exception_clear();
+            if let Ok(v) = env.call_method(&t, "toString", "()Ljava/lang/String;", &[]) {
+                if let Ok(o) = v.l() {
+                    return jstr(env, o);
+                }
+            }
+        }
+        let _ = env.exception_clear();
+    }
+    e.to_string()
+}
+
+fn with_env_res<R>(app: &AndroidApp, f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<R>) -> Result<R, String> {
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) }.map_err(|e| e.to_string())?;
+    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let act = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
+    match f(&mut *env, &act) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(describe(&mut *env, &e)),
+    }
+}
+
+fn query_mediastore(app: &AndroidApp) -> Result<Vec<Track>, String> {
+    with_env_res(app, |env, act| {
         let resolver = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
         let s = env.new_string("content://media/external/audio/media")?;
         let uri = env
@@ -72,7 +96,51 @@ pub fn list_tracks(app: &AndroidApp) -> Vec<Track> {
         let _ = env.call_method(&cur, "close", "()V", &[]);
         Ok(out)
     })
-    .unwrap_or_default()
+}
+
+fn scan_dir(dir: &std::path::Path, depth: u32, out: &mut Vec<Track>) {
+    if depth > 3 || out.len() >= 80 {
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            scan_dir(&p, depth + 1, out);
+        } else if let Some(ext) = p.extension().and_then(|x| x.to_str()) {
+            let ext = ext.to_lowercase();
+            if ["mp3", "m4a", "aac", "wav", "ogg", "flac"].contains(&ext.as_str()) {
+                let dur = crate::tik::probe_duration_ms(&p);
+                if dur > 10_000 {
+                    let title = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    out.push(Track { title, artist: String::new(), dur_ms: dur, path: p.to_string_lossy().to_string() });
+                }
+            }
+        }
+    }
+}
+
+/// Liệt kê nhạc trên máy: MediaStore trước, nếu trống/lỗi thì quét thư mục Music, Download… Trả về (danh sách, ghi chú lỗi).
+pub fn list_tracks(app: &AndroidApp) -> (Vec<Track>, String) {
+    let mut note = String::new();
+    match query_mediastore(app) {
+        Ok(v) if !v.is_empty() => return (v, String::new()),
+        Ok(_) => note = "MediaStore trống".to_string(),
+        Err(e) => note = format!("MediaStore lỗi: {}", e),
+    }
+    let mut out: Vec<Track> = Vec::new();
+    for d in ["Music", "Download", "Documents", "Recordings", "Audiobooks", "Podcasts"] {
+        scan_dir(&std::path::Path::new("/storage/emulated/0").join(d), 0, &mut out);
+    }
+    out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    if out.is_empty() {
+        (out, format!("{}; quét thư mục cũng không thấy", note))
+    } else {
+        (out, String::new())
+    }
 }
 
 /// Trình phát nhạc (android.media.MediaPlayer).
