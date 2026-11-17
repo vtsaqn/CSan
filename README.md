@@ -12,7 +12,7 @@ Gói ứng dụng: `zanq.fun.camera`. APK ký bằng khoá tạm sinh mỗi lầ
 (`base64 -w0 release.jks`) và `KEYSTORE_PASSWORD` trong Settings → Secrets → Actions.
 
 ## Phiên bản
-Ghi theo ngày cập nhật `DDMM.YY` (14/11/2026 → `1411.26`). Chạy `./bump.sh` để đặt phiên bản theo ngày hôm nay
+Ghi theo ngày cập nhật `DDMM.YY` (14/11/2026 → `1411.26`; lần thứ 2 trong ngày → `1411.26.2`). Trong Cargo.toml, `version` phải ở dạng DD.MM.YY (cargo-apk không nhận số > 255) còn `version_name` là số hiển thị. Chạy `./bump.sh` để đặt phiên bản theo ngày hôm nay
 (hoặc `./bump.sh 14 11 26`), rồi ghi vào `CHANGELOG.md`. APK tải về có tên `CSan-1411.26.apk`.
 
 ## Đã có (1511.26)

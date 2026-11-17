@@ -1,6 +1,9 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1511.26.2 — 15/11/2026
+- Sửa lỗi build "Invalid semver": cargo-apk chỉ nhận phiên bản Cargo có mỗi số <= 255, nên `version` trong Cargo.toml đổi sang dạng DD.MM.YY (15.11.26-2); phiên bản hiển thị 1511.26.2 nằm ở `version_name`. App và tên APK vẫn dùng 1511.26.2.
+
 ## 1511.26.1 — 15/11/2026
 - Sửa workflow: ghim build-tools 34.0.0 + NDK mặc định của runner, bỏ biến ANDROID_SDK_ROOT cũ, in thông tin SDK/NDK để chẩn đoán lỗi "Invalid semver" của cargo-apk.
 
