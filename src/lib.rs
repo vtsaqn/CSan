@@ -804,7 +804,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(22.0);
             ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("CSan {}", env!("CARGO_PKG_VERSION").trim_end_matches(".0")));
+                ui.strong(format!("CSan {}", env!("CSAN_VERSION")));
                 if !self.is_video() && !recording {
                     let f = ["Tắt", "Tự động", "Bật"][self.s.flash.clamp(0, 2) as usize];
                     if ui.button(format!("⚡ {}", f)).clicked() {
