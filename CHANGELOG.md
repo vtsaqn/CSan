@@ -1,6 +1,10 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1711.26.1 — 17/11/2026
+- Sửa bước đặt tên APK trong workflow (cp lỗi khi có nhiều tệp khớp `*.apk`): chọn đúng `CSan.apk`, in danh sách thư mục để chẩn đoán. Build + ký APK đã thành công.
+- Bỏ cảnh báo `pos_ms` không dùng.
+
 ## 1711.26 — 17/11/2026
 - Sửa lỗi biên dịch: eframe 0.29.1 không có `NativeOptions::android_app`; chuyển sang `event_loop_builder` + `with_android_app` của winit (thêm phụ thuộc `winit` 0.30 với `android-native-activity`).
 - Ghi rõ kiểu f32 cho các `Stroke::new` để hết cảnh báo của trình biên dịch mới.
