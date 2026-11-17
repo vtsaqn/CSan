@@ -41,7 +41,7 @@ jobs:
           echo "--- build-tools:"; ls "$SDK/build-tools" || true
           echo "--- ndk:"; ls "$SDK/ndk" || true
           echo "--- NDK mặc định: $ANDROID_NDK_HOME"; cat "$ANDROID_NDK_HOME/source.properties" || true
-          echo "--- Cargo.toml:"; grep -m1 '^version' Cargo.toml
+          echo "--- Cargo.toml:"; grep -m1 '^version' Cargo.toml; grep -m1 '^version_name' Cargo.toml
           # đảm bảo có build-tools 34.0.0 + platform 34, rồi bỏ các bản build-tools khác
           # để cargo-apk không vấp tên thư mục lạ (lỗi "Invalid semver")
           SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
@@ -79,7 +79,7 @@ jobs:
       - name: Đặt tên APK theo phiên bản
         id: ver
         run: |
-          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | sed 's/\.0$//')
+          V=$(grep -m1 '^version_name' Cargo.toml | cut -d'"' -f2)
           echo "v=$V" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           cp target/release/apk/*.apk "dist/CSan-$V.apk"
