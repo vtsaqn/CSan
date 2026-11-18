@@ -333,6 +333,7 @@ pub struct OpenOpts {
     pub live: bool,
     pub live_hevc: bool,
     pub compat: bool,
+    pub rot_extra: i32,
 }
 
 unsafe fn read_i32s(md: *mut ACameraMetadata, tag: u32) -> Vec<i32> {
@@ -465,12 +466,6 @@ impl Camera {
                 if st.len() >= 2 && st[1] != 0 {
                     info.ev_step = st[0] as f32 / st[1] as f32;
                 }
-                let so = read_i32s(md, T_SENSOR_ORI);
-                if let Some(v) = so.first() {
-                    info.sensor_ori = *v;
-                } else if let Some(v) = read_u8(md, T_SENSOR_ORI) {
-                    info.sensor_ori = v as i32;
-                }
                 let cfg = read_i32s(md, T_STREAM_CFG);
                 for c in cfg.chunks(4) {
                     if c.len() < 4 || c[3] != 0 {
@@ -485,6 +480,8 @@ impl Camera {
                 }
                 ACameraMetadata_free(md);
             }
+            // hướng ảnh: cảm biến điện thoại dọc thường xoay 90° (sau) / 270° (trước); có thể chỉnh thêm trong Cài đặt
+            info.sensor_ori = (info.sensor_ori + o.rot_extra).rem_euclid(360);
 
             // chọn kích thước
             let aspect = if o.wide { (16, 9) } else { (4, 3) };

@@ -282,3 +282,19 @@ pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start
         Ok(())
     }
 }
+
+/// Thời lượng (ms) của tệp nhạc; 0 nếu không đọc được.
+pub fn probe_duration_ms(path: &Path) -> i64 {
+    unsafe {
+        match open_extractor(path, "audio/") {
+            Ok((ex, _t, f)) => {
+                let mut d: i64 = 0;
+                AMediaFormat_getInt64(f, cs("durationUs").as_ptr(), &mut d);
+                AMediaFormat_delete(f);
+                AMediaExtractor_delete(ex);
+                d / 1000
+            }
+            Err(_) => 0,
+        }
+    }
+}
