@@ -171,6 +171,11 @@ fn publish_and_report(j: export::Jvm, p: &std::path::Path, label: &str, set: &dy
     }
 }
 
+fn chip(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
+    let fill = if selected { egui::Color32::from_rgb(0, 110, 170) } else { egui::Color32::from_black_alpha(120) };
+    ui.add(egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE)).fill(fill).rounding(10.0))
+}
+
 fn fmt_clock(ms: i64) -> String {
     let s = (ms / 1000).max(0);
     format!("{}:{:02}", s / 60, s % 60)
@@ -227,6 +232,9 @@ struct App {
     zoom_c: f32,
     top_y: f32,
     bottom_nat: f32,
+    more: bool,
+    last_status: String,
+    status_at: Instant,
     music_open: bool,
     music_msg: String,
     filter: String,
@@ -278,6 +286,9 @@ impl App {
             zoom_c: 1.0,
             top_y: 60.0,
             bottom_nat: 330.0,
+            more: false,
+            last_status: String::new(),
+            status_at: Instant::now(),
             music_open: false,
             music_msg: String::new(),
             filter: String::new(),
@@ -953,18 +964,27 @@ impl eframe::App for App {
         self.top_y = top_r.response.rect.max.y;
 
         let extra = (gap - self.bottom_nat).max(0.0);
+        // ảnh dài (16:9) lấn xuống thanh điều khiển → nền mờ hơn, chỉ giữ nút cần thiết
+        let overlay = extra <= 0.5 && prev_rect.width() > 1.0;
+        let alpha: u8 = if overlay { 45 } else { 175 };
+        let status_now = self.status.lock().map(|g| g.clone()).unwrap_or_default();
+        if status_now != self.last_status {
+            self.last_status = status_now;
+            self.status_at = Instant::now();
+        }
         let bot_r = egui::TopBottomPanel::bottom("bottom")
-            .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(175)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
+            .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(alpha)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
             .show(ctx, |ui| {
             ui.add_space(extra);
             ui.add_space(6.0);
-            let status = self.status.lock().map(|g| g.clone()).unwrap_or_default();
+            let status = self.last_status.clone();
+            let show_status = !status.is_empty() && (!overlay || self.status_at.elapsed() < Duration::from_secs(4));
             ui.vertical_centered(|ui| {
                 if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
                     let sec = d.as_secs();
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("● {:02}:{:02}", sec / 60, sec % 60));
-                } else if !status.is_empty() {
-                    ui.label(status);
+                } else if show_status {
+                    ui.label(egui::RichText::new(status).color(egui::Color32::WHITE));
                 }
             });
             // thanh zoom
@@ -979,18 +999,23 @@ impl eframe::App for App {
                             continue;
                         }
                         let sel = (cur - z).abs() < 0.15;
-                        if ui.selectable_label(sel, format!("{}x", z)).clicked() {
+                        if chip(ui, &format!("{}x", z), sel).clicked() {
                             zt_set = Some(z);
                         }
                     }
-                    ui.label(format!("{:.1}x", cur));
+                    ui.label(egui::RichText::new(format!("{:.1}x", cur)).color(egui::Color32::WHITE));
+                    if overlay && self.mode == 3 && !recording {
+                        if chip(ui, if self.more { "▾ Ẩn" } else { "⋯ Tùy chọn" }, self.more).clicked() {
+                            self.more = !self.more;
+                        }
+                    }
                 });
             }
             if let Some(z) = zt_set {
                 self.zoom_t = z;
             }
             // TikTok: nhạc + tốc độ + thời lượng (dạng nút chọn, luôn hiện)
-            if self.mode == 3 && !recording {
+            if self.mode == 3 && !recording && (!overlay || self.more) {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
                     let label = match &self.sel {
@@ -1031,7 +1056,7 @@ impl eframe::App for App {
                 ui.add_space(8.0);
                 if !recording {
                     for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK")] {
-                        if ui.selectable_label(self.mode == m, name).clicked() && self.mode != m {
+                        if chip(ui, name, self.mode == m).clicked() && self.mode != m {
                             self.mode = m;
                             self.compat = false;
                             self.reopen();
@@ -1043,7 +1068,7 @@ impl eframe::App for App {
                 cols[0].vertical_centered(|ui| {
                     ui.add_space(24.0);
                     let has = self.cam.as_ref().map(|c| c.info.has_flash).unwrap_or(false);
-                    if has && ui.selectable_label(self.user_torch, "Đèn pin").clicked() {
+                    if has && chip(ui, "Đèn pin", self.user_torch).clicked() {
                         self.user_torch = !self.user_torch;
                         let t = self.user_torch;
                         if let Some(c) = self.cam.as_mut() {

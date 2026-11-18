@@ -1,6 +1,13 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1811.26.1 — 18/11/2026
+- Sửa TikTok "Không mở được ...mp4": mở tệp bằng file descriptor (setDataSourceFd) thay vì đường dẫn; cũng áp dụng cho tệp nhạc.
+- Xem trước nét hơn: chuyển YUV→RGB ở độ phân giải đầy đủ (trước đây giảm một nửa rồi phóng to), chọn khung xem trước lớn hơn (~1,4 triệu điểm ảnh).
+- Video hỗ trợ tỉ lệ 4:3 (chọn trong Cài đặt → Tỉ lệ; 4:3 dùng khung như 1440x1080), nếu máy không có thì dùng 16:9.
+- Tỉ lệ 16:9: thanh điều khiển nền rất mờ, chỉ hiện zoom, chế độ, chụp; thông báo tự ẩn sau 4 giây; TikTok có nút "⋯ Tùy chọn" để mở/ẩn hàng nhạc, tốc độ, thời lượng.
+- Nút zoom/chế độ/đèn pin có nền tối bo tròn để dễ đọc trên ảnh.
+
 ## 1811.26 — 18/11/2026
 - Sửa thời lượng video sai (9 giây hiện 49:39:09): mốc thời gian camera là mốc tuyệt đối theo giờ máy; giờ chuẩn hoá về 0 cho cả hình và tiếng (quay video, TikTok).
 - Xem trước phủ kín: ảnh xem trước nằm ngay dưới thanh trên, rộng hết màn hình; phần dư phía dưới do thanh điều khiển lấp (không còn dải đen). Tỉ lệ 16:9 thì thanh điều khiển trong suốt đè lên phần dưới của ảnh.

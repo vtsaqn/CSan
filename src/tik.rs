@@ -19,22 +19,25 @@ unsafe fn mime_of(f: *const AMediaFormat) -> String {
     String::new()
 }
 
-unsafe fn open_extractor(path: &Path, prefix: &str) -> Result<(*mut AMediaExtractor, usize, *mut AMediaFormat), String> {
+unsafe fn open_extractor(path: &Path, prefix: &str) -> Result<(*mut AMediaExtractor, usize, *mut AMediaFormat, std::fs::File), String> {
+    // mở bằng file descriptor (đường dẫn trong Android/data thường không mở được bằng setDataSource)
+    let file = std::fs::File::open(path).map_err(|e| format!("Không mở được {}: {}", path.display(), e))?;
+    let len = file.metadata().map(|m| m.len() as i64).unwrap_or(0);
     let ex = AMediaExtractor_new();
     if ex.is_null() {
         return Err("Không tạo được extractor".to_string());
     }
-    let p = cs(&path.to_string_lossy());
-    if AMediaExtractor_setDataSource(ex, p.as_ptr()) != 0 {
+    let st = AMediaExtractor_setDataSourceFd(ex, file.as_raw_fd(), 0, len);
+    if st != 0 {
         AMediaExtractor_delete(ex);
-        return Err(format!("Không mở được {}", path.display()));
+        return Err(format!("Extractor không đọc được {} (mã {})", path.display(), st));
     }
     let n = AMediaExtractor_getTrackCount(ex);
     for i in 0..n {
         let f = AMediaExtractor_getTrackFormat(ex, i);
         if !f.is_null() && mime_of(f).starts_with(prefix) {
             AMediaExtractor_selectTrack(ex, i);
-            return Ok((ex, i, f));
+            return Ok((ex, i, f, file));
         }
         if !f.is_null() {
             AMediaFormat_delete(f);
@@ -46,7 +49,7 @@ unsafe fn open_extractor(path: &Path, prefix: &str) -> Result<(*mut AMediaExtrac
 
 /// Giải mã đoạn nhạc [start_us, start_us+len_us) -> PCM 16-bit -> AAC.
 unsafe fn encode_music(path: &Path, start_us: i64, len_us: i64) -> Result<Aac, String> {
-    let (ax, _tr, afmt) = open_extractor(path, "audio/")?;
+    let (ax, _tr, afmt, _afile) = open_extractor(path, "audio/")?;
     AMediaExtractor_seekTo(ax, start_us, 2);
     let dec = AMediaCodec_createDecoderByType(cs(&mime_of(afmt)).as_ptr());
     if dec.is_null() {
@@ -216,7 +219,7 @@ unsafe fn encode_music(path: &Path, start_us: i64, len_us: i64) -> Result<Aac, S
 /// speed > 1 nhanh (3x, 2x), < 1 chậm. orient: góc xoay video (độ).
 pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start_us: i64, seg_us: i64, orient: i32) -> Result<(), String> {
     unsafe {
-        let (vx, _vt, vf) = open_extractor(src, "video/")?;
+        let (vx, _vt, vf, _vfile) = open_extractor(src, "video/")?;
         let mut dur_us: i64 = 0;
         AMediaFormat_getInt64(vf, cs("durationUs").as_ptr(), &mut dur_us);
         let final_us = (dur_us as f64 / speed as f64) as i64;
@@ -297,7 +300,7 @@ pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start
 pub fn probe_duration_ms(path: &Path) -> i64 {
     unsafe {
         match open_extractor(path, "audio/") {
-            Ok((ex, _t, f)) => {
+            Ok((ex, _t, f, _file)) => {
                 let mut d: i64 = 0;
                 AMediaFormat_getInt64(f, cs("durationUs").as_ptr(), &mut d);
                 AMediaFormat_delete(f);

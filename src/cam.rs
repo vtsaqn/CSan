@@ -205,7 +205,7 @@ unsafe extern "C" fn on_preview(ctx: *mut c_void, reader: *mut AImageReader) {
     AImage_delete(img);
 }
 
-/// YUV_420_888 -> RGBA (giảm 1/2 độ phân giải, xoay theo màn hình) + thống kê cảnh.
+/// YUV_420_888 -> RGBA (giữ nguyên độ phân giải, xoay theo màn hình) + thống kê cảnh.
 unsafe fn convert(sh: &Shared, img: *mut AImage) {
     let (y, ys, _) = match plane(img, 0) {
         Some(v) => v,
@@ -219,8 +219,8 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
         Some(v) => v,
         None => return,
     };
-    let sw = (sh.pw / 2) as usize;
-    let shh = (sh.ph / 2) as usize;
+    let sw = sh.pw as usize;
+    let shh = sh.ph as usize;
     if sw == 0 || shh == 0 {
         return;
     }
@@ -236,8 +236,8 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
                 180 => (sw - 1 - mx, shh - 1 - dy),
                 _ => (mx, dy),
             };
-            let px = sx * 2;
-            let py = sy * 2;
+            let px = sx;
+            let py = sy;
             let yi = py * ys + px;
             let iu = (py / 2) * us + (px / 2) * ups;
             let iv = (py / 2) * vs + (px / 2) * vps;
@@ -486,7 +486,7 @@ impl Camera {
 
             // chọn kích thước
             let aspect = if o.wide { (16, 9) } else { (4, 3) };
-            let (jmax, pmax): (i64, i64) = if o.compat { (3_300_000, 400_000) } else { (12_600_000, 1_300_000) };
+            let (jmax, pmax): (i64, i64) = if o.compat { (3_300_000, 400_000) } else { (12_600_000, 1_400_000) };
             let jsize = pick_aspect(&jpg, aspect, jmax).or_else(|| largest_under(&jpg, jmax)).unwrap_or(if o.compat { (1280, 720) } else { (1920, 1080) });
             let target_h = match o.vres {
                 1 => 720,
@@ -494,8 +494,13 @@ impl Camera {
                 _ => 1080,
             };
             let vsize = {
-                let cands: Vec<(i32, i32)> = prv.iter().cloned().filter(|s| s.1 <= target_h && (s.0 as i64 * 9 - s.1 as i64 * 16).abs() <= 16).collect();
-                cands.iter().max_by_key(|s| s.0 as i64 * s.1 as i64).cloned().unwrap_or((1920, 1080))
+                let pick = |a: (i64, i64)| -> Option<(i32, i32)> {
+                    prv.iter()
+                        .cloned()
+                        .filter(|s| s.1 <= target_h && (s.0 as i64 * a.1 - s.1 as i64 * a.0).abs() <= a.0.max(a.1))
+                        .max_by_key(|s| s.0 as i64 * s.1 as i64)
+                };
+                pick((aspect.0 as i64, aspect.1 as i64)).or_else(|| pick((16, 9))).unwrap_or(if o.wide { (1920, 1080) } else { (1440, 1080) })
             };
             let refsz = if o.video { vsize } else { jsize };
             let psize = pick_aspect(&yuv, refsz, pmax).or_else(|| largest_under(&yuv, pmax)).unwrap_or((640, 480));

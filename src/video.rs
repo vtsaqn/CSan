@@ -62,6 +62,7 @@ extern "C" {
     pub fn AMediaExtractor_new() -> *mut AMediaExtractor;
     pub fn AMediaExtractor_delete(e: *mut AMediaExtractor) -> c_int;
     pub fn AMediaExtractor_setDataSource(e: *mut AMediaExtractor, loc: *const c_char) -> c_int;
+    pub fn AMediaExtractor_setDataSourceFd(e: *mut AMediaExtractor, fd: c_int, offset: i64, length: i64) -> c_int;
     pub fn AMediaExtractor_getTrackCount(e: *mut AMediaExtractor) -> usize;
     pub fn AMediaExtractor_getTrackFormat(e: *mut AMediaExtractor, idx: usize) -> *mut AMediaFormat;
     pub fn AMediaExtractor_selectTrack(e: *mut AMediaExtractor, idx: usize) -> c_int;
