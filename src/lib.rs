@@ -232,6 +232,7 @@ struct App {
     zoom_c: f32,
     top_y: f32,
     bottom_nat: f32,
+    last_gap: f32,
     more: bool,
     last_status: String,
     status_at: Instant,
@@ -286,6 +287,7 @@ impl App {
             zoom_c: 1.0,
             top_y: 60.0,
             bottom_nat: 330.0,
+            last_gap: 0.0,
             more: false,
             last_status: String::new(),
             status_at: Instant::now(),
@@ -900,7 +902,14 @@ impl eframe::App for App {
                 bg.image(t.id(), prev_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
             }
         }
-        let gap = if prev_rect.width() > 1.0 { (screen.max.y - prev_rect.max.y).max(0.0) } else { 0.0 };
+        // phần dư dưới ảnh xem trước; khi ảnh tạm mất (đang mở lại camera) thì giữ giá trị cũ để bố cục không nhảy
+        let gap = if prev_rect.width() > 1.0 {
+            let g = (screen.max.y - prev_rect.max.y).max(0.0);
+            self.last_gap = g;
+            g
+        } else {
+            self.last_gap
+        };
 
         // zoom mượt: chụm 2 ngón / bấm nút chỉ đổi mục tiêu, giá trị thật trượt dần theo từng khung hình
         let zd = ctx.input(|i| i.zoom_delta());
@@ -964,15 +973,19 @@ impl eframe::App for App {
         self.top_y = top_r.response.rect.max.y;
 
         // ảnh dài (16:9) lấn xuống thanh điều khiển → nền mờ hơn, chỉ giữ nút cần thiết
-        let overlay = gap < 215.0 && prev_rect.width() > 1.0;
+        let overlay = gap < 215.0 && (prev_rect.width() > 1.0 || self.last_gap > 0.0);
         let alpha: u8 = if overlay { 45 } else { 175 };
         let status_now = self.status.lock().map(|g| g.clone()).unwrap_or_default();
         if status_now != self.last_status {
             self.last_status = status_now;
             self.status_at = Instant::now();
         }
+        // chiều cao thanh điều khiển tính cố định theo từng khung hình (không phụ thuộc khung trước)
+        let tik_rows = self.mode == 3 && !recording && (!overlay || self.more);
+        let est = 215.0 + if tik_rows { 95.0 } else { 0.0 };
+        let panel_h = gap.max(est);
         let bot_r = egui::TopBottomPanel::bottom("bottom")
-            .min_height(gap)
+            .exact_height(panel_h)
             .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(alpha)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
             .show(ctx, |ui| {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {

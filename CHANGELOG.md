@@ -1,6 +1,9 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1811.26.3 — 18/11/2026
+- Sửa vùng đen "chạy lên trên" khi đổi chế độ: thanh điều khiển trước đây chỉ có chiều cao tối thiểu nên giữ chiều cao cũ từ khung trước khi ảnh xem trước tạm mất. Giờ chiều cao tính cố định mỗi khung hình (max của phần dư dưới ảnh và ước lượng nội dung, cộng thêm 3 hàng TikTok khi hiện); phần dư dưới ảnh được nhớ lại khi ảnh tạm mất.
+
 ## 1811.26.2 — 18/11/2026
 - Sửa giao diện nhấp nháy lên xuống: bỏ cách đo chiều cao thanh điều khiển ở khung trước để tính khoảng đệm cho khung sau (hai giá trị đuổi nhau). Thanh điều khiển giờ cao tối thiểu bằng phần dư dưới ảnh xem trước và xếp sát mép dưới (bố cục từ dưới lên), không còn vòng phản hồi.
 
