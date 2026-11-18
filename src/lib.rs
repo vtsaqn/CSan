@@ -225,6 +225,8 @@ struct App {
     tracks: Vec<media::Track>,
     zoom_t: f32,
     zoom_c: f32,
+    top_y: f32,
+    bottom_nat: f32,
     music_open: bool,
     music_msg: String,
     filter: String,
@@ -274,6 +276,8 @@ impl App {
             tracks: Vec::new(),
             zoom_t: 1.0,
             zoom_c: 1.0,
+            top_y: 60.0,
+            bottom_nat: 330.0,
             music_open: false,
             music_msg: String::new(),
             filter: String::new(),
@@ -328,6 +332,7 @@ impl App {
             live_hevc: self.s.lc == 1,
             compat: self.compat,
             rot_extra: self.s.prot.clamp(0, 3) * 90,
+            live_audio: self.mode == 1 && self.s.audio && perm::has(&self.droid, MIC_PERM),
         }
     }
 
@@ -425,8 +430,10 @@ impl App {
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&dst);
-                    set(&format!("Lỗi xử lý TikTok: {} (giữ video gốc)", e));
+                    let msg = format!("Lỗi xử lý TikTok: {}", e);
+                    let _ = std::fs::write(path.with_file_name("csan_log.txt"), &msg);
                     publish_and_report(jv, &path, "video gốc", &set);
+                    set(&format!("{} (đã lưu video gốc)", msg));
                 }
             }
         });
@@ -869,6 +876,21 @@ impl eframe::App for App {
         self.tick();
         self.upload_frame(ctx);
 
+        // ---- nền: xem trước phủ kín chiều ngang, đặt ngay dưới thanh trên; phần dư bên dưới do thanh điều khiển lấp ----
+        let screen = ctx.screen_rect();
+        let mut prev_rect = egui::Rect::NOTHING;
+        {
+            let bg = ctx.layer_painter(egui::LayerId::background());
+            bg.rect_filled(screen, 0.0, egui::Color32::BLACK);
+            if let Some(t) = &self.tex {
+                let sz = t.size_vec2();
+                let h = screen.width() * sz.y / sz.x.max(1.0);
+                prev_rect = egui::Rect::from_min_size(egui::pos2(screen.min.x, self.top_y), egui::vec2(screen.width(), h));
+                bg.image(t.id(), prev_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            }
+        }
+        let gap = if prev_rect.width() > 1.0 { (screen.max.y - prev_rect.max.y).max(0.0) } else { 0.0 };
+
         // zoom mượt: chụm 2 ngón / bấm nút chỉ đổi mục tiêu, giá trị thật trượt dần theo từng khung hình
         let zd = ctx.input(|i| i.zoom_delta());
         let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.1);
@@ -896,7 +918,7 @@ impl eframe::App for App {
         let mut s_changed = false;
         let mut reopen = false;
 
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+        let top_r = egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(22.0);
             ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(16.8));
             ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
@@ -928,8 +950,13 @@ impl eframe::App for App {
                 }
             });
         });
+        self.top_y = top_r.response.rect.max.y;
 
-        egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+        let extra = (gap - self.bottom_nat).max(0.0);
+        let bot_r = egui::TopBottomPanel::bottom("bottom")
+            .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(175)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
+            .show(ctx, |ui| {
+            ui.add_space(extra);
             ui.add_space(6.0);
             let status = self.status.lock().map(|g| g.clone()).unwrap_or_default();
             ui.vertical_centered(|ui| {
@@ -1056,23 +1083,21 @@ impl eframe::App for App {
             });
             ui.add_space(18.0);
         });
+        self.bottom_nat = (bot_r.response.rect.height() - extra).max(100.0);
 
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(egui::Color32::BLACK)).show(ctx, |ui| {
-            if let Some(t) = &self.tex {
-                let sz = t.size_vec2();
-                let av = ui.available_size();
-                let k = (av.x / sz.x).min(av.y / sz.y);
+        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            if prev_rect.width() > 1.0 {
+                let rect = prev_rect;
+                let vis = rect.intersect(ui.max_rect());
                 let mut tap: Option<(f32, f32, egui::Pos2)> = None;
-                let mut rect = egui::Rect::NOTHING;
-                ui.vertical_centered(|ui| {
-                    let r = ui.add(egui::Image::new(egui::load::SizedTexture::new(t.id(), sz * k)).sense(egui::Sense::click()));
-                    rect = r.rect;
+                if vis.width() > 1.0 && vis.height() > 1.0 {
+                    let r = ui.interact(vis, egui::Id::new("preview"), egui::Sense::click());
                     if r.clicked() {
                         if let Some(p) = r.interact_pointer_pos() {
-                            tap = Some(((p.x - r.rect.min.x) / r.rect.width(), (p.y - r.rect.min.y) / r.rect.height(), p));
+                            tap = Some(((p.x - rect.min.x) / rect.width(), (p.y - rect.min.y) / rect.height(), p));
                         }
                     }
-                });
+                }
                 if let Some((u, v, p)) = tap {
                     self.tap_focus(u, v, p);
                 }

@@ -229,7 +229,7 @@ pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start
             }
         }
 
-        let file = std::fs::File::create(dst).map_err(|e| e.to_string())?;
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(dst).map_err(|e| e.to_string())?;
         let mux = AMediaMuxer_new(file.as_raw_fd(), 0);
         if mux.is_null() {
             return Err("Không tạo được muxer".to_string());
@@ -240,9 +240,14 @@ pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start
             Some(a) => AMediaMuxer_addTrack(mux, a.fmt),
             None => -1,
         };
-        if vi < 0 || AMediaMuxer_start(mux) != 0 {
+        if vi < 0 {
             AMediaMuxer_delete(mux);
-            return Err("Muxer không chạy được".to_string());
+            return Err(format!("Muxer không nhận track video (mã {})", vi));
+        }
+        let st = AMediaMuxer_start(mux);
+        if st != 0 {
+            AMediaMuxer_delete(mux);
+            return Err(format!("Muxer không chạy được (mã {}, track âm thanh {})", st, ai));
         }
         let mut cap = 8usize << 20;
         let mut mx = 0i32;
@@ -251,12 +256,17 @@ pub fn run(src: &Path, dst: &Path, speed: f32, music: Option<&Path>, music_start
         }
         let mut buf = vec![0u8; cap];
         let mut last: i64 = -1;
+        let mut vbase: Option<i64> = None;
         loop {
             let n = AMediaExtractor_readSampleData(vx, buf.as_mut_ptr(), cap);
             if n < 0 {
                 break;
             }
-            let mut pts = (AMediaExtractor_getSampleTime(vx) as f64 / speed as f64) as i64;
+            let st_us = AMediaExtractor_getSampleTime(vx);
+            if vbase.is_none() {
+                vbase = Some(st_us);
+            }
+            let mut pts = ((st_us - vbase.unwrap_or(0)).max(0) as f64 / speed as f64) as i64;
             if pts <= last {
                 pts = last + 1;
             }

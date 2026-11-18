@@ -1,6 +1,12 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1811.26 — 18/11/2026
+- Sửa thời lượng video sai (9 giây hiện 49:39:09): mốc thời gian camera là mốc tuyệt đối theo giờ máy; giờ chuẩn hoá về 0 cho cả hình và tiếng (quay video, TikTok).
+- Xem trước phủ kín: ảnh xem trước nằm ngay dưới thanh trên, rộng hết màn hình; phần dư phía dưới do thanh điều khiển lấp (không còn dải đen). Tỉ lệ 16:9 thì thanh điều khiển trong suốt đè lên phần dưới của ảnh.
+- Live có âm thanh: mic ghi liên tục vào bộ đệm vòng cùng với hình, clip Live ghép cả tiếng (cần quyền micro và bật "Ghi âm thanh").
+- TikTok: ghi lỗi chi tiết (hiện ở dòng trạng thái, lưu thêm csan_log.txt trong thư mục app) và mở tệp đầu ra ở chế độ đọc-ghi; chuẩn hoá mốc thời gian khi đổi tốc độ.
+
 ## 1711.26.3 — 17/11/2026
 - Thêm icon ứng dụng (máy ảnh, đủ các độ phân giải mipmap).
 - Ảnh và video lưu vào thư viện máy ở DCIM/Csan (qua MediaStore, không cần thêm quyền); xong thì xoá bản tạm trong thư mục app. Nếu không ghi được thì giữ tệp trong thư mục app và báo lý do.

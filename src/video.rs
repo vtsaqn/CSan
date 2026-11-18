@@ -251,7 +251,7 @@ unsafe fn audio_free(a: &mut Audio) {
 }
 
 /// Lấy dữ liệu đã mã hóa ra ghi vào muxer. Trả về true nếu đã nhận EOS.
-unsafe fn drain(codec: *mut AMediaCodec, muxer: *mut AMediaMuxer, track: &mut isize, started: bool) -> bool {
+unsafe fn drain(codec: *mut AMediaCodec, muxer: *mut AMediaMuxer, track: &mut isize, started: bool, base: &mut Option<i64>, last: &mut i64) -> bool {
     if *track >= 0 && !started {
         return false;
     }
@@ -277,7 +277,17 @@ unsafe fn drain(codec: *mut AMediaCodec, muxer: *mut AMediaMuxer, track: &mut is
             let mut sz = 0usize;
             let p = AMediaCodec_getOutputBuffer(codec, idx as usize, &mut sz);
             if !p.is_null() {
-                AMediaMuxer_writeSampleData(muxer, *track as usize, p, &info);
+                // chuẩn hoá mốc thời gian về 0 (camera trả mốc tuyệt đối theo giờ máy → trình phát hiện sai thời lượng)
+                if base.is_none() {
+                    *base = Some(info.pts);
+                }
+                let mut inf = info;
+                inf.pts = (info.pts - base.unwrap_or(0)).max(0);
+                if inf.pts <= *last {
+                    inf.pts = *last + 1;
+                }
+                *last = inf.pts;
+                AMediaMuxer_writeSampleData(muxer, *track as usize, p, &inf);
             }
         }
         if (info.flags & FLAG_EOS) != 0 {
@@ -300,7 +310,7 @@ pub struct Recorder {
 
 fn run(enc: Encoder, path: PathBuf, audio: bool, orient: i32, stop: Arc<AtomicBool>) -> Result<(), String> {
     unsafe {
-        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).map_err(|e| e.to_string())?;
         let muxer = AMediaMuxer_new(file.as_raw_fd(), 0);
         if muxer.is_null() {
             return Err("Không tạo được muxer".to_string());
@@ -311,6 +321,9 @@ fn run(enc: Encoder, path: PathBuf, audio: bool, orient: i32, stop: Arc<AtomicBo
             return Err("Không chạy được bộ mã hóa video".to_string());
         }
         let mut aud = if audio { audio_new() } else { None };
+        let mut vbase: Option<i64> = None;
+        let mut abase: Option<i64> = aud.as_ref().map(|a| a.base_us);
+        let (mut vlast, mut alast) = (-1i64, -1i64);
         let mut vtrack: isize = -1;
         let mut atrack: isize = -1;
         let mut started = false;
@@ -328,11 +341,11 @@ fn run(enc: Encoder, path: PathBuf, audio: bool, orient: i32, stop: Arc<AtomicBo
                 audio_pump(a, stopping);
             }
             if !v_done {
-                v_done = drain(enc.codec, muxer, &mut vtrack, started);
+                v_done = drain(enc.codec, muxer, &mut vtrack, started, &mut vbase, &mut vlast);
             }
             if let Some(a) = aud.as_ref() {
                 if !a_done {
-                    a_done = drain(a.codec, muxer, &mut atrack, started);
+                    a_done = drain(a.codec, muxer, &mut atrack, started, &mut abase, &mut alast);
                 }
             }
             if !started && vtrack >= 0 {
@@ -397,7 +410,7 @@ impl Recorder {
 }
 
 // ====================================================================
-// Live: bộ mã hóa chạy liên tục, giữ ~6 giây gần nhất trong RAM (ring buffer)
+// Live: bộ mã hóa chạy liên tục, giữ ~6 giây hình + tiếng gần nhất trong RAM (ring buffer)
 // ====================================================================
 struct LFrame {
     pts: i64,
@@ -414,7 +427,17 @@ pub struct Live {
     clips: Arc<std::sync::Mutex<Vec<ClipResult>>>,
 }
 
-unsafe fn build_clip(ring: &[LFrame], fmt: *mut AMediaFormat, t: i64, dir: &PathBuf, orient: i32) -> ClipResult {
+#[allow(clippy::too_many_arguments)]
+unsafe fn build_clip(
+    ring: &[LFrame],
+    fmt: *mut AMediaFormat,
+    aring: &[LFrame],
+    afmt: *mut AMediaFormat,
+    delta: i64,
+    t: i64,
+    dir: &PathBuf,
+    orient: i32,
+) -> ClipResult {
     if fmt.is_null() || ring.is_empty() {
         return Err("Không có dữ liệu Live".to_string());
     }
@@ -432,7 +455,7 @@ unsafe fn build_clip(ring: &[LFrame], fmt: *mut AMediaFormat, t: i64, dir: &Path
     let start = start.ok_or_else(|| "Không có keyframe".to_string())?;
     let _ = std::fs::create_dir_all(dir);
     let path = dir.join(format!("clip_{}.mp4", boottime_us()));
-    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).map_err(|e| e.to_string())?;
     let m = AMediaMuxer_new(file.as_raw_fd(), 0);
     if m.is_null() {
         let _ = std::fs::remove_file(&path);
@@ -440,6 +463,7 @@ unsafe fn build_clip(ring: &[LFrame], fmt: *mut AMediaFormat, t: i64, dir: &Path
     }
     AMediaMuxer_setOrientationHint(m, orient);
     let tr = AMediaMuxer_addTrack(m, fmt);
+    let atr: isize = if !afmt.is_null() && !aring.is_empty() { AMediaMuxer_addTrack(m, afmt) } else { -1 };
     if tr < 0 || AMediaMuxer_start(m) != 0 {
         AMediaMuxer_delete(m);
         let _ = std::fs::remove_file(&path);
@@ -457,6 +481,23 @@ unsafe fn build_clip(ring: &[LFrame], fmt: *mut AMediaFormat, t: i64, dir: &Path
         cnt += 1;
         last = f.pts;
     }
+    if atr >= 0 {
+        // quy mốc thời gian âm thanh sang mốc của hình bằng độ lệch đo được lúc bấm chụp
+        let mut alast = -1i64;
+        for f in aring {
+            let p = f.pts + delta - base;
+            if p < 0 {
+                continue;
+            }
+            if p > hi - base {
+                break;
+            }
+            let pts = if p <= alast { alast + 1 } else { p };
+            alast = pts;
+            let info = BufInfo { offset: 0, size: f.data.len() as i32, pts, flags: 0 };
+            AMediaMuxer_writeSampleData(m, atr as usize, f.data.as_ptr(), &info);
+        }
+    }
     let fps = if cnt > 1 && last > base { (cnt - 1) as f32 * 1_000_000.0 / (last - base) as f32 } else { 0.0 };
     AMediaMuxer_stop(m);
     AMediaMuxer_delete(m);
@@ -473,6 +514,7 @@ fn live_run(
     stop: Arc<AtomicBool>,
     dir: PathBuf,
     orient: i32,
+    audio: bool,
 ) {
     unsafe {
         if AMediaCodec_start(enc.codec) != 0 {
@@ -481,9 +523,13 @@ fn live_run(
             }
             return;
         }
+        let mut aud = if audio { audio_new() } else { None };
         let mut ring: Vec<LFrame> = Vec::new();
+        let mut aring: Vec<LFrame> = Vec::new();
         let mut fmt: *mut AMediaFormat = null_mut();
-        let mut pend: Vec<(i64, Instant)> = Vec::new();
+        let mut afmt: *mut AMediaFormat = null_mut();
+        // (pts hình mới nhất, pts tiếng mới nhất, lúc bấm)
+        let mut pend: Vec<(i64, i64, Instant)> = Vec::new();
         while !stop.load(Ordering::SeqCst) {
             for _ in 0..32 {
                 let mut info = BufInfo { offset: 0, size: 0, pts: 0, flags: 0 };
@@ -511,18 +557,52 @@ fn live_run(
                 }
                 AMediaCodec_releaseOutputBuffer(enc.codec, idx as usize, false);
             }
+            if let Some(a) = aud.as_mut() {
+                audio_pump(a, false);
+                for _ in 0..32 {
+                    let mut info = BufInfo { offset: 0, size: 0, pts: 0, flags: 0 };
+                    let idx = AMediaCodec_dequeueOutputBuffer(a.codec, &mut info, 0);
+                    if idx == -1 {
+                        break;
+                    }
+                    if idx == -2 {
+                        if !afmt.is_null() {
+                            AMediaFormat_delete(afmt);
+                        }
+                        afmt = AMediaCodec_getOutputFormat(a.codec);
+                        continue;
+                    }
+                    if idx < 0 {
+                        continue;
+                    }
+                    if info.size > 0 && (info.flags & FLAG_CONFIG) == 0 {
+                        let mut sz = 0usize;
+                        let p = AMediaCodec_getOutputBuffer(a.codec, idx as usize, &mut sz);
+                        if !p.is_null() {
+                            let data = std::slice::from_raw_parts(p.add(info.offset as usize), info.size as usize).to_vec();
+                            aring.push(LFrame { pts: info.pts, flags: 0, data });
+                        }
+                    }
+                    AMediaCodec_releaseOutputBuffer(a.codec, idx as usize, false);
+                }
+            }
             let newest = ring.last().map(|f| f.pts).unwrap_or(0);
             while ring.len() > 2 && newest - ring[0].pts > 6_000_000 {
                 ring.remove(0);
             }
+            let anewest = aring.last().map(|f| f.pts).unwrap_or(0);
+            while aring.len() > 2 && anewest - aring[0].pts > 7_000_000 {
+                aring.remove(0);
+            }
             while rx.try_recv().is_ok() {
-                pend.push((newest, Instant::now()));
+                pend.push((newest, anewest, Instant::now()));
             }
             let mut i = 0;
             while i < pend.len() {
-                let (t, w) = pend[i];
+                let (t, at, w) = pend[i];
                 if newest >= t + 1_500_000 || w.elapsed() > Duration::from_millis(3000) {
-                    let r = build_clip(&ring, fmt, t, &dir, orient);
+                    let delta = if at != 0 && t != 0 { t - at } else { 0 };
+                    let r = build_clip(&ring, fmt, &aring, afmt, delta, t, &dir, orient);
                     if let Ok(mut o) = out.lock() {
                         o.push(r);
                     }
@@ -536,17 +616,23 @@ fn live_run(
         if !fmt.is_null() {
             AMediaFormat_delete(fmt);
         }
+        if !afmt.is_null() {
+            AMediaFormat_delete(afmt);
+        }
+        if let Some(mut a) = aud.take() {
+            audio_free(&mut a);
+        }
         AMediaCodec_stop(enc.codec);
     }
 }
 
 impl Live {
-    pub fn start(enc: Encoder, dir: PathBuf, orient: i32) -> Live {
+    pub fn start(enc: Encoder, dir: PathBuf, orient: i32, audio: bool) -> Live {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let clips = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (s2, c2) = (stop.clone(), clips.clone());
-        let handle = std::thread::Builder::new().name("csan-live".to_string()).spawn(move || live_run(enc, rx, c2, s2, dir, orient)).ok();
+        let handle = std::thread::Builder::new().name("csan-live".to_string()).spawn(move || live_run(enc, rx, c2, s2, dir, orient, audio)).ok();
         Live { stop, tx, handle, clips }
     }
     pub fn mark(&self) {

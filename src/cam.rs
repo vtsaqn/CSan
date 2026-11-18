@@ -334,6 +334,7 @@ pub struct OpenOpts {
     pub live_hevc: bool,
     pub compat: bool,
     pub rot_extra: i32,
+    pub live_audio: bool,
 }
 
 unsafe fn read_i32s(md: *mut ACameraMetadata, tag: u32) -> Vec<i32> {
@@ -629,7 +630,7 @@ impl Camera {
             }
             if o.live {
                 if let Some(enc) = c.enc.take() {
-                    c.live = Some(video::Live::start(enc, o.dir.clone(), c.info.sensor_ori));
+                    c.live = Some(video::Live::start(enc, o.dir.clone(), c.info.sensor_ori, o.live_audio));
                     c.ctl.recording = true;
                 }
             }
