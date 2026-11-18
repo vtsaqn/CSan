@@ -963,9 +963,8 @@ impl eframe::App for App {
         });
         self.top_y = top_r.response.rect.max.y;
 
-        let extra = (gap - self.bottom_nat).max(0.0);
         // ảnh dài (16:9) lấn xuống thanh điều khiển → nền mờ hơn, chỉ giữ nút cần thiết
-        let overlay = extra <= 0.5 && prev_rect.width() > 1.0;
+        let overlay = gap < 215.0 && prev_rect.width() > 1.0;
         let alpha: u8 = if overlay { 45 } else { 175 };
         let status_now = self.status.lock().map(|g| g.clone()).unwrap_or_default();
         if status_now != self.last_status {
@@ -973,20 +972,105 @@ impl eframe::App for App {
             self.status_at = Instant::now();
         }
         let bot_r = egui::TopBottomPanel::bottom("bottom")
+            .min_height(gap)
             .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(alpha)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
             .show(ctx, |ui| {
-            ui.add_space(extra);
-            ui.add_space(6.0);
-            let status = self.last_status.clone();
-            let show_status = !status.is_empty() && (!overlay || self.status_at.elapsed() < Duration::from_secs(4));
-            ui.vertical_centered(|ui| {
-                if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
-                    let sec = d.as_secs();
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("● {:02}:{:02}", sec / 60, sec % 60));
-                } else if show_status {
-                    ui.label(egui::RichText::new(status).color(egui::Color32::WHITE));
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.add_space(18.0);
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 92.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.columns(3, |cols| {
+                    cols[0].vertical_centered(|ui| {
+                        ui.add_space(24.0);
+                        let has = self.cam.as_ref().map(|c| c.info.has_flash).unwrap_or(false);
+                        if has && chip(ui, "Đèn pin", self.user_torch).clicked() {
+                            self.user_torch = !self.user_torch;
+                            let t = self.user_torch;
+                            if let Some(c) = self.cam.as_mut() {
+                                c.ctl.torch = t;
+                                let _ = c.apply();
+                            }
+                        }
+                    });
+                    cols[1].vertical_centered(|ui| {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(84.0, 84.0), egui::Sense::click());
+                        let c = rect.center();
+                        let painter = ui.painter();
+                        if self.is_video() {
+                            painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
+                            if recording {
+                                painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(34.0, 34.0)), 6.0, egui::Color32::RED);
+                            } else {
+                                painter.circle_filled(c, 30.0, egui::Color32::RED);
+                            }
+                        } else {
+                            painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
+                            let r = if resp.is_pointer_button_down_on() { 28.0 } else { 32.0 };
+                            painter.circle_filled(c, r, egui::Color32::WHITE);
+                        }
+                        if resp.clicked() {
+                            self.on_shutter();
+                        }
+                    });
+                    cols[2].vertical_centered(|ui| {
+                        ui.add_space(24.0);
+                        if !recording && ui.button("🔄 Đổi").clicked() {
+                            self.front = !self.front;
+                            self.compat = false;
+                            self.reopen();
+                        }
+                    });
+                });
+            });
+            // chế độ Ảnh / Live / Video / TikTok
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                if !recording {
+                    for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK")] {
+                        if chip(ui, name, self.mode == m).clicked() && self.mode != m {
+                            self.mode = m;
+                            self.compat = false;
+                            self.reopen();
+                        }
+                    }
                 }
             });
+            // TikTok: nhạc + tốc độ + thời lượng (dạng nút chọn, luôn hiện)
+            if self.mode == 3 && !recording && (!overlay || self.more) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Thời lượng:");
+                    for (i, n) in ["15 giây", "30 giây", "60 giây"].iter().enumerate() {
+                        if ui.selectable_label(self.s.tikd == i as i32, *n).clicked() {
+                            self.s.tikd = i as i32;
+                            s_changed = true;
+                        }
+                    }
+                });
+                            ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Tốc độ:");
+                    for (i, n) in ["3x", "2x", "1x", "0,5x", "0,25x"].iter().enumerate() {
+                        if ui.selectable_label(self.s.tiks == i as i32, *n).clicked() {
+                            self.s.tiks = i as i32;
+                            s_changed = true;
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(8.0);
+                    let label = match &self.sel {
+                        Some(t) => format!("♪ {}  {} → {}", t.title, fmt_clock(self.tik_start_ms), fmt_clock(self.tik_start_ms + self.tik_seg_ms)),
+                        None => "♪ Chọn nhạc ›".to_string(),
+                    };
+                    if ui.button(label).clicked() {
+                        self.music_open = true;
+                        self.load_tracks();
+                    }
+                    if self.sel.is_some() && ui.button("✕").clicked() {
+                        self.sel = None;
+                    }
+                });
+            }
             // thanh zoom
             let mut zt_set: Option<f32> = None;
             if let Some(c) = self.cam.as_mut() {
@@ -1014,101 +1098,20 @@ impl eframe::App for App {
             if let Some(z) = zt_set {
                 self.zoom_t = z;
             }
-            // TikTok: nhạc + tốc độ + thời lượng (dạng nút chọn, luôn hiện)
-            if self.mode == 3 && !recording && (!overlay || self.more) {
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(8.0);
-                    let label = match &self.sel {
-                        Some(t) => format!("♪ {}  {} → {}", t.title, fmt_clock(self.tik_start_ms), fmt_clock(self.tik_start_ms + self.tik_seg_ms)),
-                        None => "♪ Chọn nhạc ›".to_string(),
-                    };
-                    if ui.button(label).clicked() {
-                        self.music_open = true;
-                        self.load_tracks();
-                    }
-                    if self.sel.is_some() && ui.button("✕").clicked() {
-                        self.sel = None;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label("Tốc độ:");
-                    for (i, n) in ["3x", "2x", "1x", "0,5x", "0,25x"].iter().enumerate() {
-                        if ui.selectable_label(self.s.tiks == i as i32, *n).clicked() {
-                            self.s.tiks = i as i32;
-                            s_changed = true;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label("Thời lượng:");
-                    for (i, n) in ["15 giây", "30 giây", "60 giây"].iter().enumerate() {
-                        if ui.selectable_label(self.s.tikd == i as i32, *n).clicked() {
-                            self.s.tikd = i as i32;
-                            s_changed = true;
-                        }
-                    }
-                });
-            }
-            // chế độ Ảnh / Live / Video / TikTok
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                if !recording {
-                    for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK")] {
-                        if chip(ui, name, self.mode == m).clicked() && self.mode != m {
-                            self.mode = m;
-                            self.compat = false;
-                            self.reopen();
-                        }
-                    }
+            let status = self.last_status.clone();
+            let show_status = !status.is_empty() && (!overlay || self.status_at.elapsed() < Duration::from_secs(4));
+            ui.vertical_centered(|ui| {
+                if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
+                    let sec = d.as_secs();
+                    ui.colored_label(egui::Color32::LIGHT_RED, format!("● {:02}:{:02}", sec / 60, sec % 60));
+                } else if show_status {
+                    ui.label(egui::RichText::new(status).color(egui::Color32::WHITE));
                 }
             });
-            ui.columns(3, |cols| {
-                cols[0].vertical_centered(|ui| {
-                    ui.add_space(24.0);
-                    let has = self.cam.as_ref().map(|c| c.info.has_flash).unwrap_or(false);
-                    if has && chip(ui, "Đèn pin", self.user_torch).clicked() {
-                        self.user_torch = !self.user_torch;
-                        let t = self.user_torch;
-                        if let Some(c) = self.cam.as_mut() {
-                            c.ctl.torch = t;
-                            let _ = c.apply();
-                        }
-                    }
-                });
-                cols[1].vertical_centered(|ui| {
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(84.0, 84.0), egui::Sense::click());
-                    let c = rect.center();
-                    let painter = ui.painter();
-                    if self.is_video() {
-                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
-                        if recording {
-                            painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(34.0, 34.0)), 6.0, egui::Color32::RED);
-                        } else {
-                            painter.circle_filled(c, 30.0, egui::Color32::RED);
-                        }
-                    } else {
-                        painter.circle_stroke(c, 38.0, egui::Stroke::new(3.0_f32, egui::Color32::WHITE));
-                        let r = if resp.is_pointer_button_down_on() { 28.0 } else { 32.0 };
-                        painter.circle_filled(c, r, egui::Color32::WHITE);
-                    }
-                    if resp.clicked() {
-                        self.on_shutter();
-                    }
-                });
-                cols[2].vertical_centered(|ui| {
-                    ui.add_space(24.0);
-                    if !recording && ui.button("🔄 Đổi").clicked() {
-                        self.front = !self.front;
-                        self.compat = false;
-                        self.reopen();
-                    }
-                });
+            ui.add_space(6.0);
             });
-            ui.add_space(18.0);
         });
-        self.bottom_nat = (bot_r.response.rect.height() - extra).max(100.0);
+        let _ = bot_r;
 
         egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
             if prev_rect.width() > 1.0 {

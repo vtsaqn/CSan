@@ -1,6 +1,9 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1811.26.2 — 18/11/2026
+- Sửa giao diện nhấp nháy lên xuống: bỏ cách đo chiều cao thanh điều khiển ở khung trước để tính khoảng đệm cho khung sau (hai giá trị đuổi nhau). Thanh điều khiển giờ cao tối thiểu bằng phần dư dưới ảnh xem trước và xếp sát mép dưới (bố cục từ dưới lên), không còn vòng phản hồi.
+
 ## 1811.26.1 — 18/11/2026
 - Sửa TikTok "Không mở được ...mp4": mở tệp bằng file descriptor (setDataSourceFd) thay vì đường dẫn; cũng áp dụng cho tệp nhạc.
 - Xem trước nét hơn: chuyển YUV→RGB ở độ phân giải đầy đủ (trước đây giảm một nửa rồi phóng to), chọn khung xem trước lớn hơn (~1,4 triệu điểm ảnh).
