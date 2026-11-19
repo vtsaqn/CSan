@@ -7,7 +7,7 @@
    Lần đầu ~15–25 phút (cài cargo-apk + biên dịch egui), các lần sau nhanh hơn nhờ cache.
 3. Khi xong, mở lần chạy đó → mục **Artifacts** → tải `CSar-apk` → giải nén → cài `csan.apk`.
 
-Gói ứng dụng: `zanq.fun.camera`. APK ký bằng khoá tạm sinh mỗi lần build, nên mỗi bản có chữ ký khác nhau
+Gói ứng dụng: `zanq.fun.csar`. APK ký bằng khoá tạm sinh mỗi lần build, nên mỗi bản có chữ ký khác nhau
 (phải gỡ bản cũ trước khi cài bản mới). Muốn chữ ký cố định: tạo secrets `KEYSTORE_BASE64`
 (`base64 -w0 release.jks`) và `KEYSTORE_PASSWORD` trong Settings → Secrets → Actions.
 
@@ -29,4 +29,4 @@ TikTok: chọn/cắt nhạc, đổi tốc độ, ghép nhạc.
 - Một số mã khoá metadata Camera2 viết theo header NDK; máy nào không nhận thì tính năng đó bị bỏ qua.
 - Live cần máy cho phép 3 luồng cùng lúc (xem trước + JPEG + mã hóa); nếu không, chế độ LIVE báo lỗi.
 - TikTok/nhạc cần cấp quyền đọc âm thanh; bấm "Làm mới" trong danh sách nhạc sau khi cấp quyền.
-- Ảnh/video lưu ở thư viện máy: DCIM/Csan. Tệp tạm và config.txt nằm ở `Android/data/zanq.fun.camera/files/`.
+- Ảnh/video lưu ở thư viện máy: DCIM/Csan. Tệp tạm và config.txt nằm ở `Android/data/zanq.fun.csar/files/`.

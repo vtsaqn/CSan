@@ -1,6 +1,9 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1911.26 — 19/11/2026
+- Đổi mã gói từ `zanq.fun.camera` sang `zanq.fun.csar` để cài song song với app Java gốc (hai app riêng, không ghi đè nhau). Thư mục dữ liệu mới: `Android/data/zanq.fun.csar/files/`; cài đặt của bản trước không tự chuyển sang. Ảnh/video vẫn lưu ở DCIM/Csan.
+
 ## 1811.26.5 — 18/11/2026
 - Đổi tên ứng dụng thành CSar: nhãn dưới icon, tiêu đề trong app, tên tệp APK (CSar-<phiên bản>.apk) và tên artifact trên GitHub. Mã gói `zanq.fun.camera` và thư mục DCIM/Csan giữ nguyên để không mất dữ liệu cũ.
 

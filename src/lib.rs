@@ -634,7 +634,7 @@ impl App {
 
         // thước thăng bằng (gia tốc kế)
         if self.s.level && self.level.is_none() {
-            self.level = Some(level::Level::start("zanq.fun.camera"));
+            self.level = Some(level::Level::start("zanq.fun.csar"));
         } else if !self.s.level && self.level.is_some() {
             self.level = None;
         }
