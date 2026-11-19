@@ -34,7 +34,7 @@ fn android_main(app: AndroidApp) {
         })),
         ..Default::default()
     };
-    let r = eframe::run_native("CSan", options, Box::new(move |cc| {
+    let r = eframe::run_native("CSar", options, Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
             Ok(Box::new(App::new(app)))
         }));
@@ -168,6 +168,17 @@ fn publish_and_report(j: export::Jvm, p: &std::path::Path, label: &str, set: &dy
     match export::publish(j, p, true) {
         Ok(n) => set(&format!("Đã lưu {} → DCIM/Csan/{}", label, n)),
         Err(e) => set(&format!("Đã lưu {} trong thư mục app ({}); chưa vào thư viện ảnh: {}", label, base_name(p), e)),
+    }
+}
+
+fn short(s: &str, n: usize) -> String {
+    let c: Vec<char> = s.chars().collect();
+    if c.len() <= n {
+        s.to_string()
+    } else {
+        let mut o: String = c[..n].iter().collect();
+        o.push('…');
+        o
     }
 }
 
@@ -942,25 +953,8 @@ impl eframe::App for App {
             ui.add_space(22.0);
             ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(16.8));
             ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("CSan {}", env!("CSAN_VERSION"))).strong().size(16.8));
-                if !self.is_video() && !recording {
-                    let f = ["Tắt", "Tự động", "Bật"][self.s.flash.clamp(0, 2) as usize];
-                    if ui.button(format!("⚡ {}", f)).clicked() {
-                        self.s.flash = (self.s.flash + 1) % 3;
-                        s_changed = true;
-                    }
-                    let h = ["Tắt", "Tự động", "Bật"][self.s.hdr.clamp(0, 2) as usize];
-                    if ui.button(format!("HDR {}", h)).clicked() {
-                        self.s.hdr = (self.s.hdr + 1) % 3;
-                        s_changed = true;
-                    }
-                    let t = TIMERS[self.s.tm.clamp(0, 2) as usize];
-                    if ui.button(format!("⏱ {}s", t)).clicked() {
-                        self.s.tm = (self.s.tm + 1) % 3;
-                        s_changed = true;
-                    }
-                }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("CSar {}", env!("CSAN_VERSION"))).strong().size(16.8));
                 if ui.button(if self.s.grid { "Lưới ✔" } else { "Lưới" }).clicked() {
                     self.s.grid = !self.s.grid;
                     s_changed = true;
@@ -969,21 +963,20 @@ impl eframe::App for App {
                     self.settings_open = !self.settings_open;
                 }
             });
+            ui.add_space(4.0);
         });
         self.top_y = top_r.response.rect.max.y;
 
-        // ảnh dài (16:9) lấn xuống thanh điều khiển → nền mờ hơn, chỉ giữ nút cần thiết
-        let overlay = gap < 215.0 && (prev_rect.width() > 1.0 || self.last_gap > 0.0);
+        // ảnh dài (16:9) lấn xuống thanh điều khiển → nền mờ hơn, ẩn hàng tuỳ chọn (mở bằng nút "⋯")
+        let overlay = gap < 190.0 && (prev_rect.width() > 1.0 || self.last_gap > 0.0);
         let alpha: u8 = if overlay { 45 } else { 175 };
         let status_now = self.status.lock().map(|g| g.clone()).unwrap_or_default();
         if status_now != self.last_status {
             self.last_status = status_now;
             self.status_at = Instant::now();
         }
-        // chiều cao thanh điều khiển tính cố định theo từng khung hình (không phụ thuộc khung trước)
-        let tik_rows = self.mode == 3 && !recording && (!overlay || self.more);
-        let est = 215.0 + if tik_rows { 95.0 } else { 0.0 };
-        let panel_h = gap.max(est);
+        // chiều cao thanh điều khiển luôn cố định → các nút ở cùng vị trí trong mọi chế độ
+        let panel_h = gap.max(190.0);
         let bot_r = egui::TopBottomPanel::bottom("bottom")
             .exact_height(panel_h)
             .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(alpha)).inner_margin(egui::Margin::symmetric(6.0, 4.0)))
@@ -1047,43 +1040,6 @@ impl eframe::App for App {
                     }
                 }
             });
-            // TikTok: nhạc + tốc độ + thời lượng (dạng nút chọn, luôn hiện)
-            if self.mode == 3 && !recording && (!overlay || self.more) {
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label("Thời lượng:");
-                    for (i, n) in ["15 giây", "30 giây", "60 giây"].iter().enumerate() {
-                        if ui.selectable_label(self.s.tikd == i as i32, *n).clicked() {
-                            self.s.tikd = i as i32;
-                            s_changed = true;
-                        }
-                    }
-                });
-                            ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label("Tốc độ:");
-                    for (i, n) in ["3x", "2x", "1x", "0,5x", "0,25x"].iter().enumerate() {
-                        if ui.selectable_label(self.s.tiks == i as i32, *n).clicked() {
-                            self.s.tiks = i as i32;
-                            s_changed = true;
-                        }
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(8.0);
-                    let label = match &self.sel {
-                        Some(t) => format!("♪ {}  {} → {}", t.title, fmt_clock(self.tik_start_ms), fmt_clock(self.tik_start_ms + self.tik_seg_ms)),
-                        None => "♪ Chọn nhạc ›".to_string(),
-                    };
-                    if ui.button(label).clicked() {
-                        self.music_open = true;
-                        self.load_tracks();
-                    }
-                    if self.sel.is_some() && ui.button("✕").clicked() {
-                        self.sel = None;
-                    }
-                });
-            }
             // thanh zoom
             let mut zt_set: Option<f32> = None;
             if let Some(c) = self.cam.as_mut() {
@@ -1101,7 +1057,7 @@ impl eframe::App for App {
                         }
                     }
                     ui.label(egui::RichText::new(format!("{:.1}x", cur)).color(egui::Color32::WHITE));
-                    if overlay && self.mode == 3 && !recording {
+                    if overlay && !recording {
                         if chip(ui, if self.more { "▾ Ẩn" } else { "⋯ Tùy chọn" }, self.more).clicked() {
                             self.more = !self.more;
                         }
@@ -1111,16 +1067,64 @@ impl eframe::App for App {
             if let Some(z) = zt_set {
                 self.zoom_t = z;
             }
-            let status = self.last_status.clone();
-            let show_status = !status.is_empty() && (!overlay || self.status_at.elapsed() < Duration::from_secs(4));
-            ui.vertical_centered(|ui| {
-                if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
-                    let sec = d.as_secs();
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("● {:02}:{:02}", sec / 60, sec % 60));
-                } else if show_status {
-                    ui.label(egui::RichText::new(status).color(egui::Color32::WHITE));
-                }
-            });
+            // hàng tuỳ chọn theo chế độ (luôn nằm ngay trên hàng zoom)
+            if !recording && (!overlay || self.more) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    match self.mode {
+                        0 | 1 => {
+                            let f = ["Tắt", "Tự động", "Bật"];
+                            if chip(ui, &format!("⚡ {}", f[self.s.flash.clamp(0, 2) as usize]), false).clicked() {
+                                self.s.flash = (self.s.flash + 1) % 3;
+                                s_changed = true;
+                            }
+                            if self.mode == 0 && chip(ui, &format!("HDR {}", f[self.s.hdr.clamp(0, 2) as usize]), false).clicked() {
+                                self.s.hdr = (self.s.hdr + 1) % 3;
+                                s_changed = true;
+                            }
+                            if chip(ui, &format!("⏱ {}s", TIMERS[self.s.tm.clamp(0, 2) as usize]), false).clicked() {
+                                self.s.tm = (self.s.tm + 1) % 3;
+                                s_changed = true;
+                            }
+                        }
+                        2 => {
+                            let e = ["Chống rung: Tắt", "EIS", "EIS+", "OIS"];
+                            if chip(ui, e[self.s.eis.clamp(0, 3) as usize], false).clicked() {
+                                self.s.eis = (self.s.eis + 1) % 4;
+                                s_changed = true;
+                            }
+                            if chip(ui, ["1080p", "720p", "4K"][self.s.vres.clamp(0, 2) as usize], false).clicked() {
+                                self.s.vres = (self.s.vres + 1) % 3;
+                                s_changed = true;
+                                reopen = true;
+                            }
+                        }
+                        _ => {
+                            let label = match &self.sel {
+                                Some(t) => format!("♪ {}", short(&t.title, 12)),
+                                None => "♪ Chọn nhạc".to_string(),
+                            };
+                            if chip(ui, &label, self.sel.is_some()).clicked() {
+                                self.music_open = true;
+                                self.load_tracks();
+                            }
+                            if chip(ui, &format!("Tốc độ {}", ["3x", "2x", "1x", "0,5x", "0,25x"][self.s.tiks.clamp(0, 4) as usize]), false).clicked() {
+                                self.s.tiks = (self.s.tiks + 1) % 5;
+                                s_changed = true;
+                            }
+                            if chip(ui, &format!("{} giây", TIKD[self.s.tikd.clamp(0, 2) as usize]), false).clicked() {
+                                self.s.tikd = (self.s.tikd + 1) % 3;
+                                s_changed = true;
+                            }
+                        }
+                    }
+                    if chip(ui, ["4:3", "16:9"][self.s.ratio.clamp(0, 1) as usize], false).clicked() {
+                        self.s.ratio = (self.s.ratio + 1) % 2;
+                        s_changed = true;
+                        reopen = true;
+                    }
+                });
+            }
             ui.add_space(6.0);
             });
         });
@@ -1180,6 +1184,24 @@ impl eframe::App for App {
                     } else {
                         self.focus_ring = None;
                     }
+                }
+                // thông báo + thời gian quay: vẽ đè lên ảnh, không chiếm chỗ bố cục
+                let mut msg: Option<(String, egui::Color32)> = None;
+                if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
+                    let sec = d.as_secs();
+                    msg = Some((format!("● {:02}:{:02}", sec / 60, sec % 60), egui::Color32::LIGHT_RED));
+                } else if !self.last_status.is_empty() {
+                    let life = if self.last_status.chars().count() > 50 { 12 } else { 6 };
+                    if self.status_at.elapsed() < Duration::from_secs(life) {
+                        msg = Some((self.last_status.clone(), egui::Color32::WHITE));
+                    }
+                }
+                if let Some((text, col)) = msg {
+                    let galley = painter.layout(text, egui::FontId::proportional(15.0), col, rect.width() * 0.9);
+                    let sz = galley.size();
+                    let pos = egui::pos2(rect.center().x - sz.x / 2.0, rect.min.y + 12.0);
+                    painter.rect_filled(egui::Rect::from_min_size(pos, sz).expand(6.0), 8.0, egui::Color32::from_black_alpha(150));
+                    painter.galley(pos, galley, col);
                 }
                 if let Some(te) = self.timer_end {
                     let left = te.saturating_duration_since(Instant::now()).as_secs() + 1;

@@ -1,6 +1,15 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 1811.26.5 — 18/11/2026
+- Đổi tên ứng dụng thành CSar: nhãn dưới icon, tiêu đề trong app, tên tệp APK (CSar-<phiên bản>.apk) và tên artifact trên GitHub. Mã gói `zanq.fun.camera` và thư mục DCIM/Csan giữ nguyên để không mất dữ liệu cũ.
+
+## 1811.26.4 — 18/11/2026
+- Giao diện đồng đều ở mọi chế độ (Ảnh/Live/Video/TikTok): thanh trên luôn một hàng (tên + Lưới + Cài đặt); thanh dưới có chiều cao cố định, bốn hàng luôn ở cùng vị trí: tuỳ chọn → zoom → chế độ → nút chụp.
+- Hàng tuỳ chọn đổi theo chế độ, mỗi nút bấm để chuyển giá trị: Ảnh (Flash, HDR, Hẹn giờ, Tỉ lệ); Live (Flash, Hẹn giờ, Tỉ lệ); Video (Chống rung, Độ phân giải, Tỉ lệ); TikTok (Nhạc, Tốc độ, Thời lượng, Tỉ lệ).
+- Thông báo và thời gian quay vẽ đè lên đầu ảnh xem trước (tự ẩn sau 6–12 giây), không còn chiếm chỗ trong bố cục.
+- Tỉ lệ 16:9: hàng tuỳ chọn ẩn, bấm "⋯ Tùy chọn" để mở.
+
 ## 1811.26.3 — 18/11/2026
 - Sửa vùng đen "chạy lên trên" khi đổi chế độ: thanh điều khiển trước đây chỉ có chiều cao tối thiểu nên giữ chiều cao cũ từ khung trước khi ảnh xem trước tạm mất. Giờ chiều cao tính cố định mỗi khung hình (max của phần dư dưới ảnh và ước lượng nội dung, cộng thêm 3 hàng TikTok khi hiện); phần dư dưới ảnh được nhớ lại khi ảnh tạm mất.
 

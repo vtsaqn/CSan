@@ -1,11 +1,11 @@
-# CSan (Rust) – build APK bằng GitHub Actions
+# CSar (Rust) – build APK bằng GitHub Actions
 
 ## Cách dùng
 1. Tạo repo mới trên GitHub, giải nén zip này và đẩy toàn bộ lên nhánh `main`
    (nhớ cả thư mục ẩn `.github`).
 2. Vào tab **Actions** → workflow **Build APK** tự chạy (hoặc bấm *Run workflow*).
    Lần đầu ~15–25 phút (cài cargo-apk + biên dịch egui), các lần sau nhanh hơn nhờ cache.
-3. Khi xong, mở lần chạy đó → mục **Artifacts** → tải `CSan-apk` → giải nén → cài `csan.apk`.
+3. Khi xong, mở lần chạy đó → mục **Artifacts** → tải `CSar-apk` → giải nén → cài `csan.apk`.
 
 Gói ứng dụng: `zanq.fun.camera`. APK ký bằng khoá tạm sinh mỗi lần build, nên mỗi bản có chữ ký khác nhau
 (phải gỡ bản cũ trước khi cài bản mới). Muốn chữ ký cố định: tạo secrets `KEYSTORE_BASE64`

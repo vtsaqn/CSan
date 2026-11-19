@@ -1,6 +1,6 @@
 [package]
 name = "csan"
-version = "26.11.18-3"
+version = "26.11.18-5"
 edition = "2021"
 
 # Lưu ý: cargo-apk tự suy versionName/versionCode từ "version" (dạng YY.MM.DD, mỗi số <= 255) và
@@ -26,11 +26,11 @@ codegen-units = 4
 strip = true
 
 [package.metadata.csan]
-display_version = "1811.26.3"
+display_version = "1811.26.5"
 
 [package.metadata.android]
 package = "zanq.fun.camera"
-apk_name = "CSan"
+apk_name = "CSar"
 resources = "res"
 build_targets = ["aarch64-linux-android"]
 
@@ -39,7 +39,7 @@ min_sdk_version = 29
 target_sdk_version = 34
 
 [package.metadata.android.application]
-label = "CSan"
+label = "CSar"
 icon = "@mipmap/ic_launcher"
 extract_native_libs = true
 
