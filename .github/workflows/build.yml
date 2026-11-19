@@ -1,4 +1,4 @@
-name: Build APK
+name: Build CSar APK
 
 on:
   push:
@@ -84,12 +84,12 @@ jobs:
           mkdir -p dist
           ls -la target/release/apk/ || true
           # chọn đúng 1 tệp APK (ưu tiên CSan.apk, nếu không thì tệp lớn nhất)
-          APK=target/release/apk/CSan.apk
+          APK=target/release/apk/CSar.apk
           if [ ! -f "$APK" ]; then APK=$(ls -S target/release/apk/*.apk | head -n 1); fi
           echo "Dùng: $APK"
-          cp "$APK" "dist/CSan-$V.apk"
+          cp "$APK" "dist/CSar-$V.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: CSan-${{ steps.ver.outputs.v }}
+          name: CSar-${{ steps.ver.outputs.v }}
           path: dist/*.apk
