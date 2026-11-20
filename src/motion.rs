@@ -2,7 +2,7 @@
 const XMP_NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 const EXIF_HDR: &[u8] = b"Exif\0\0";
 
-fn xmp(vs: usize, img_mime: &str) -> Vec<u8> {
+fn xmp(vs: usize, img_mime: &str, pre_us: i64) -> Vec<u8> {
     let x = format!(
         "<?xpacket begin=\"\u{FEFF}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
 <x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Adobe XMP Core Test.SNAPSHOT\">\n\
@@ -11,8 +11,8 @@ fn xmp(vs: usize, img_mime: &str) -> Vec<u8> {
    xmlns:GCamera=\"http://ns.google.com/photos/1.0/camera/\"\n\
    GCamera:MotionPhoto=\"1\"\n\
    GCamera:MotionPhotoVersion=\"1\"\n\
-   GCamera:MotionPhotoPresentationTimestampUs=\"0\"\n\
-   GCamera:MotionPhotoPrimaryPresentationTimestampUs=\"0\"\n\
+   GCamera:MotionPhotoPresentationTimestampUs=\"{pre}\"\n\
+   GCamera:MotionPhotoPrimaryPresentationTimestampUs=\"{pre}\"\n\
    GCamera:MotionPhotoOwner=\"oplus\"/>\n\
   <rdf:Description rdf:about=\"\"\n\
    xmlns:OLP=\"http://ns.oplus.com/photo/1.0/livephoto/\"\n\
@@ -37,7 +37,8 @@ fn xmp(vs: usize, img_mime: &str) -> Vec<u8> {
 </x:xmpmeta>\n\
 <?xpacket end=\"w\"?>",
         vs = vs,
-        mime = img_mime
+        mime = img_mime,
+        pre = pre_us
     );
     x.into_bytes()
 }
@@ -115,9 +116,9 @@ fn insert_xmp(j: &[u8], a1: &[u8]) -> Vec<u8> {
 }
 
 /// JPEG + MP4 -> Motion Photo (một tệp .jpg).
-pub fn build_motion_photo(jpeg: &[u8], video: &[u8]) -> Result<Vec<u8>, String> {
+pub fn build_motion_photo(jpeg: &[u8], video: &[u8], pre_us: i64) -> Result<Vec<u8>, String> {
     let clean = strip_old_xmp(jpeg)?;
-    let a = app1(&xmp(video.len(), "image/jpeg"));
+    let a = app1(&xmp(video.len(), "image/jpeg", pre_us));
     let mut fin = insert_xmp(&clean, &a);
     fin.extend_from_slice(video);
     Ok(fin)

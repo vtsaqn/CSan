@@ -143,6 +143,16 @@ pub fn list_tracks(app: &AndroidApp) -> (Vec<Track>, String) {
     }
 }
 
+/// (hãng, mẫu máy) từ android.os.Build, ví dụ ("Xiaomi", "Redmi Note 12").
+pub fn device_names(app: &AndroidApp) -> (String, String) {
+    with_env_res(app, |env, _act| {
+        let man = env.get_static_field("android/os/Build", "MANUFACTURER", "Ljava/lang/String;")?.l()?;
+        let model = env.get_static_field("android/os/Build", "MODEL", "Ljava/lang/String;")?.l()?;
+        Ok((jstr(env, man), jstr(env, model)))
+    })
+    .unwrap_or_default()
+}
+
 /// Trình phát nhạc (android.media.MediaPlayer).
 pub struct Player {
     app: AndroidApp,

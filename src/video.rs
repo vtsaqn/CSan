@@ -32,6 +32,7 @@ extern "C" {
     pub fn AMediaFormat_new() -> *mut AMediaFormat;
     pub fn AMediaFormat_delete(f: *mut AMediaFormat) -> c_int;
     pub fn AMediaFormat_setString(f: *mut AMediaFormat, name: *const c_char, v: *const c_char);
+    pub fn AMediaFormat_setFloat(f: *mut AMediaFormat, name: *const c_char, v: f32);
     pub fn AMediaFormat_setInt32(f: *mut AMediaFormat, name: *const c_char, v: i32);
     pub fn AMediaCodec_createEncoderByType(t: *const c_char) -> *mut AMediaCodec;
     pub fn AMediaCodec_configure(c: *mut AMediaCodec, f: *const AMediaFormat, surf: *mut ANativeWindow, crypto: *mut c_void, flags: u32) -> c_int;
@@ -116,6 +117,11 @@ unsafe impl Send for Encoder {}
 
 impl Encoder {
     pub fn new(w: i32, h: i32, fps: i32, bitrate: i32, hevc: bool) -> Result<Encoder, String> {
+        Encoder::new_with(w, h, fps, bitrate, hevc, 1.0)
+    }
+
+    /// iframe: khoảng cách khung chủ đạo (giây). Nhỏ hơn 1 dùng số thực; máy không nhận thì tự lùi về 1 giây.
+    pub fn new_with(w: i32, h: i32, fps: i32, bitrate: i32, hevc: bool, iframe: f32) -> Result<Encoder, String> {
         unsafe {
             let mime = if hevc { "video/hevc" } else { "video/avc" };
             let codec = AMediaCodec_createEncoderByType(cs(mime).as_ptr());
@@ -128,10 +134,18 @@ impl Encoder {
             AMediaFormat_setInt32(f, cs("height").as_ptr(), h);
             AMediaFormat_setInt32(f, cs("bitrate").as_ptr(), bitrate);
             AMediaFormat_setInt32(f, cs("frame-rate").as_ptr(), fps);
-            AMediaFormat_setInt32(f, cs("i-frame-interval").as_ptr(), 1);
+            if iframe < 1.0 {
+                AMediaFormat_setFloat(f, cs("i-frame-interval").as_ptr(), iframe);
+            } else {
+                AMediaFormat_setInt32(f, cs("i-frame-interval").as_ptr(), 1);
+            }
             AMediaFormat_setInt32(f, cs("color-format").as_ptr(), COLOR_FORMAT_SURFACE);
             let st = AMediaCodec_configure(codec, f, null_mut(), null_mut(), 1);
             AMediaFormat_delete(f);
+            if st != 0 && iframe < 1.0 {
+                AMediaCodec_delete(codec);
+                return Encoder::new_with(w, h, fps, bitrate, hevc, 1.0);
+            }
             if st != 0 {
                 AMediaCodec_delete(codec);
                 return Err(format!("Cấu hình bộ mã hóa lỗi ({}x{} {}fps, mã {})", w, h, fps, st));
@@ -419,7 +433,8 @@ struct LFrame {
     data: Vec<u8>,
 }
 
-pub type ClipResult = Result<(Vec<u8>, f32), String>;
+/// (mp4, fps, thời điểm chụp tính từ đầu clip, µs)
+pub type ClipResult = Result<(Vec<u8>, f32, i64), String>;
 
 pub struct Live {
     stop: Arc<AtomicBool>,
@@ -444,14 +459,17 @@ unsafe fn build_clip(
     }
     let lo = t - 1_500_000;
     let hi = t + 1_500_000;
+    // bắt đầu tại khung chủ đạo GẦN NHẤT mốc (chụp − 1,5 s) (trước đây lấy khung chủ đạo trước mốc nên có thể dài tới ~2,5 s)
     let mut start: Option<usize> = None;
+    let mut best = i64::MAX;
     for (i, f) in ring.iter().enumerate() {
-        if (f.flags & 1) != 0 && f.pts <= lo {
-            start = Some(i);
+        if (f.flags & 1) != 0 {
+            let d = (f.pts - lo).abs();
+            if d < best {
+                best = d;
+                start = Some(i);
+            }
         }
-    }
-    if start.is_none() {
-        start = ring.iter().position(|f| (f.flags & 1) != 0);
     }
     let start = start.ok_or_else(|| "Không có keyframe".to_string())?;
     let _ = std::fs::create_dir_all(dir);
@@ -505,7 +523,7 @@ unsafe fn build_clip(
     drop(file);
     let bytes = std::fs::read(&path).map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&path);
-    bytes.map(|b| (b, fps))
+    bytes.map(|b| (b, fps, (t - base).max(0)))
 }
 
 fn live_run(

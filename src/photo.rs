@@ -1,5 +1,6 @@
 //! Lưu ảnh: JPEG / PNG / WebP / HEIC, tuỳ chọn gửi server khử nhiễu, ghép HDR, ảnh động (Live).
 use crate::cfg::Cfg;
+use crate::exif::{self, Meta};
 use crate::{hdr, heic, motion, server};
 use image::{ImageFormat, RgbImage};
 use std::io::Cursor;
@@ -57,7 +58,7 @@ fn heic_small(img: &RgbImage, q: i32) -> Result<Vec<u8>, String> {
 }
 
 /// ifmt: 0 = JPEG, 1 = PNG, 2 = WebP (không mất dữ liệu), 3 = HEIC
-fn write_rgb(cfg: &Cfg, dir: &Path, img: RgbImage, rot: i32, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+fn write_rgb(cfg: &Cfg, dir: &Path, img: RgbImage, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
     let img = rotate(img, rot);
     let q = cfg.int("iq", 95).clamp(50, 100) as u8;
     let mut fmt = cfg.int("ifmt", 0);
@@ -73,9 +74,15 @@ fn write_rgb(cfg: &Cfg, dir: &Path, img: RgbImage, rot: i32, prog: &mut dyn FnMu
     }
     let (bytes, ext) = match (heic_bytes, fmt) {
         (Some(b), _) => (b, "heic"),
-        (None, 1) => (encode_other(&img, ImageFormat::Png)?, "png"),
+        (None, 1) => {
+            let b = encode_other(&img, ImageFormat::Png)?;
+            (if cfg.boolean("exif", true) { exif::set_png(&b, &exif::tiff(meta, 1)) } else { b }, "png")
+        }
         (None, 2) => (encode_other(&img, ImageFormat::WebP)?, "webp"),
-        _ => (encode_jpeg(&img, q)?, "jpg"),
+        _ => {
+            let b = encode_jpeg(&img, q)?;
+            (if cfg.boolean("exif", true) { exif::set_jpeg(&b, &exif::app1(meta, 1)) } else { b }, "jpg")
+        }
     };
     let _ = std::fs::create_dir_all(dir);
     let p = dir.join(format!("IMG_{}.{}", stamp(), ext));
@@ -94,46 +101,50 @@ fn maybe_server(cfg: &Cfg, jpeg: Vec<u8>, prog: &mut dyn FnMut(&str, i32)) -> Ve
 }
 
 /// Lưu 1 ảnh JPEG từ camera. Trả về đường dẫn tệp.
-pub fn save_jpeg(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, rot: i32, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+pub fn save_jpeg(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
     let jpeg = maybe_server(cfg, jpeg, prog);
     if cfg.int("ifmt", 0) == 0 {
         let _ = std::fs::create_dir_all(dir);
         let p = dir.join(format!("IMG_{}.jpg", stamp()));
-        std::fs::write(&p, jpeg).map_err(|e| e.to_string())?;
+        let out = if cfg.boolean("exif", true) { exif::set_jpeg(&jpeg, &exif::app1(meta, exif::orient_of(rot))) } else { jpeg };
+        std::fs::write(&p, out).map_err(|e| e.to_string())?;
         return Ok(p);
     }
     let img = image::load_from_memory(&jpeg).map_err(|e| e.to_string())?.to_rgb8();
-    write_rgb(cfg, dir, img, rot, prog)
+    write_rgb(cfg, dir, img, rot, meta, prog)
 }
 
 /// Ghép 3 ảnh HDR rồi lưu; lỗi thì lưu ảnh vừa sáng.
-pub fn save_hdr(cfg: &Cfg, dir: &Path, jpegs: Vec<Vec<u8>>, rot: i32, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+pub fn save_hdr(cfg: &Cfg, dir: &Path, jpegs: Vec<Vec<u8>>, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
     if jpegs.len() < 3 {
         return Err("Thiếu ảnh HDR".to_string());
     }
     prog("HDR: đang ghép ảnh…", -1);
-    match hdr::fuse(&jpegs[0], &jpegs[1], &jpegs[2]).and_then(|img| write_rgb(cfg, dir, img, rot, &mut |_m: &str, _p: i32| {})) {
+    match hdr::fuse(&jpegs[0], &jpegs[1], &jpegs[2]).and_then(|img| write_rgb(cfg, dir, img, rot, meta, &mut |_m: &str, _p: i32| {})) {
         Ok(p) => Ok(p),
         Err(e) => {
             prog(&format!("HDR lỗi ({}) → lưu ảnh vừa sáng", e), -1);
-            save_jpeg(cfg, dir, jpegs[1].clone(), rot, prog)
+            save_jpeg(cfg, dir, jpegs[1].clone(), rot, meta, prog)
         }
     }
 }
 
 /// Live: JPEG + clip MP4 -> Motion Photo (.jpg). Lỗi ghép thì lưu ảnh thường.
-pub fn save_live(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32)>, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+pub fn save_live(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32, i64)>, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
     let mut jpeg = maybe_server(cfg, jpeg, prog);
+    if cfg.boolean("exif", true) {
+        jpeg = exif::set_jpeg(&jpeg, &exif::app1(meta, exif::orient_of(rot)));
+    }
     let _ = std::fs::create_dir_all(dir);
     let p = dir.join(format!("LIVE_{}.jpg", stamp()));
-    if let Some((mut vid, fps)) = clip {
+    if let Some((mut vid, fps, pre_us)) = clip {
         if cfg.boolean("stabsrv", false) && !cfg.str("stabsrv_url", "").trim().is_empty() {
             match server::stab_process(cfg, &vid, fps, prog) {
                 Ok(b) => vid = b,
                 Err(e) => prog(&format!("Ổn định Live lỗi: {}", e), -1),
             }
         }
-        match motion::build_motion_photo(&jpeg, &vid) {
+        match motion::build_motion_photo(&jpeg, &vid, pre_us) {
             Ok(m) => jpeg = m,
             Err(e) => prog(&format!("Ghép Live lỗi → lưu ảnh thường: {}", e), -1),
         }

@@ -1,6 +1,6 @@
 [package]
 name = "csan"
-version = "26.11.19"
+version = "26.11.19-1"
 edition = "2021"
 
 # Lưu ý: cargo-apk tự suy versionName/versionCode từ "version" (dạng YY.MM.DD, mỗi số <= 255) và
@@ -26,7 +26,7 @@ codegen-units = 4
 strip = true
 
 [package.metadata.csan]
-display_version = "1911.26"
+display_version = "1911.26.1"
 
 [package.metadata.android]
 package = "zanq.fun.csar"

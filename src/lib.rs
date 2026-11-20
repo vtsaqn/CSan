@@ -1,5 +1,6 @@
 mod cam;
 mod cfg;
+mod exif;
 mod export;
 mod hdr;
 mod heic;
@@ -87,6 +88,7 @@ struct Set {
     tikd: i32,
     tiks: i32,
     prot: i32,
+    exif: bool,
 }
 
 impl Set {
@@ -120,6 +122,7 @@ impl Set {
             tikd: c.int("tikd", 1) as i32,
             tiks: c.int("tiks", 2) as i32,
             prot: c.int("prot", 0) as i32,
+            exif: c.boolean("exif", true),
         }
     }
     fn store(&self, c: &mut Cfg) {
@@ -152,6 +155,7 @@ impl Set {
         c.set("tikd", self.tikd.to_string());
         c.set("tiks", self.tiks.to_string());
         c.set("prot", self.prot.to_string());
+        c.set("exif", b(self.exif));
     }
 }
 
@@ -194,7 +198,7 @@ fn fmt_clock(ms: i64) -> String {
 
 struct LivePend {
     jpeg: Option<Vec<u8>>,
-    clip: Option<Result<(Vec<u8>, f32), String>>,
+    clip: Option<Result<(Vec<u8>, f32, i64), String>>,
     t: Instant,
 }
 
@@ -241,6 +245,7 @@ struct App {
     tracks: Vec<media::Track>,
     zoom_t: f32,
     zoom_c: f32,
+    device: (String, String),
     top_y: f32,
     bottom_nat: f32,
     last_gap: f32,
@@ -268,6 +273,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("."));
         let cfg = Cfg::load(&dir);
         let s = Set::load(&cfg);
+        let device = media::device_names(&droid);
         App {
             droid,
             dir,
@@ -296,6 +302,7 @@ impl App {
             tracks: Vec::new(),
             zoom_t: 1.0,
             zoom_c: 1.0,
+            device,
             top_y: 60.0,
             bottom_nat: 330.0,
             last_gap: 0.0,
@@ -377,7 +384,20 @@ impl App {
         }
     }
 
+    fn meta_src(&self) -> Option<exif::MetaSrc> {
+        self.cam.as_ref().map(|c| exif::MetaSrc {
+            sh: c.sh.clone(),
+            ev_step: c.info.ev_step,
+            phys: c.info.phys,
+            zoom: c.ctl.zoom,
+            make: self.device.0.clone(),
+            model: self.device.1.clone(),
+        })
+    }
+
     fn spawn_save(&self, jpegs: Vec<Vec<u8>>, is_hdr: bool) {
+        let src = self.meta_src();
+        let nmeta = if is_hdr { 3 } else { 1 };
         let jv = export::Jvm::from_app(&self.droid);
         let cfg = self.cfg.clone();
         let dir = self.dir.clone();
@@ -396,10 +416,11 @@ impl App {
                     set(m);
                 }
             };
+            let meta = src.map(|s| s.gather(nmeta)).unwrap_or_default();
             let r = if is_hdr {
-                photo::save_hdr(&cfg, &dir, jpegs, rot, &mut prog)
+                photo::save_hdr(&cfg, &dir, jpegs, rot, &meta, &mut prog)
             } else {
-                photo::save_jpeg(&cfg, &dir, jpegs.into_iter().next().unwrap_or_default(), rot, &mut prog)
+                photo::save_jpeg(&cfg, &dir, jpegs.into_iter().next().unwrap_or_default(), rot, &meta, &mut prog)
             };
             match r {
                 Ok(p) => publish_and_report(jv, &p, "ảnh", &set),
@@ -408,7 +429,9 @@ impl App {
         });
     }
 
-    fn spawn_live(&self, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32)>) {
+    fn spawn_live(&self, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32, i64)>) {
+        let src = self.meta_src();
+        let rot = self.cam.as_ref().map(|c| c.info.sensor_ori).unwrap_or(90);
         let jv = export::Jvm::from_app(&self.droid);
         let cfg = self.cfg.clone();
         let dir = self.dir.clone();
@@ -426,7 +449,8 @@ impl App {
                     set(m);
                 }
             };
-            match photo::save_live(&cfg, &dir, jpeg, clip, &mut prog) {
+            let meta = src.map(|s| s.gather(1)).unwrap_or_default();
+            match photo::save_live(&cfg, &dir, jpeg, clip, rot, &meta, &mut prog) {
                 Ok(p) => publish_and_report(jv, &p, "ảnh Live", &set),
                 Err(e) => set(&format!("Lỗi lưu Live: {}", e)),
             }
@@ -1322,6 +1346,7 @@ impl eframe::App for App {
             s_changed |= ui.add(egui::Slider::new(&mut self.s.iqh, 30..=100).text("Chất lượng HEIC")).changed();
             reopen |= combo(ui, "Mã hóa Live", &mut self.s.lc, &["H.264", "HEVC"]);
             s_changed |= ui.checkbox(&mut self.s.level, "Thước thăng bằng").changed();
+            s_changed |= ui.checkbox(&mut self.s.exif, "Ghi thông số chụp vào ảnh (EXIF: máy, mm, ISO, f, EV, tốc độ, flash)").changed();
             reopen |= combo(ui, "Tỉ lệ", &mut self.s.ratio, &["4:3", "16:9"]);
             s_changed |= combo(ui, "HDR", &mut self.s.hdr, &["Tắt", "Tự động", "Bật"]);
             s_changed |= combo(ui, "Chụp đêm", &mut self.s.night, &["Tắt", "Tự động", "Bật"]);

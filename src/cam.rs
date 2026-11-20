@@ -140,6 +140,12 @@ const T_MAX_ZOOM: u32 = 851972;
 const T_STREAM_CFG: u32 = 851978;
 const T_SENSOR_ORI: u32 = 917517;
 const T_ACTIVE_ARRAY: u32 = 983040;
+const T_PHYS_SIZE: u32 = 983045;
+const T_EXPOSURE_TIME: u32 = 917504;
+const T_SENSITIVITY: u32 = 917506;
+const T_APERTURE: u32 = 524288;
+const T_FOCAL: u32 = 524290;
+const T_FLASH_STATE: u32 = 262149;
 
 const FMT_YUV: i32 = 0x23;
 const FMT_JPEG: i32 = 0x100;
@@ -153,7 +159,60 @@ pub struct Frame {
     pub rgba: Vec<u8>,
 }
 
+#[derive(Clone, Default)]
+pub struct ShotMeta {
+    pub iso: i32,
+    pub exp_ns: i64,
+    pub aperture: f32,
+    pub focal: f32,
+    pub ev_steps: i32,
+    pub flash_state: u8,
+}
+
+#[repr(C)]
+struct CaptureCb {
+    context: *mut c_void,
+    on_started: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, *const ACaptureRequest, i64)>,
+    on_progressed: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, *mut ACaptureRequest, *const ACameraMetadata)>,
+    on_completed: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, *mut ACaptureRequest, *const ACameraMetadata)>,
+    on_failed: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, *mut ACaptureRequest, *mut c_void)>,
+    on_seq_done: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, c_int, i64)>,
+    on_seq_abort: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, c_int)>,
+    on_buf_lost: Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession, *mut ACaptureRequest, *mut ANativeWindow, i64)>,
+}
+
+unsafe extern "C" fn on_capture_done(ctx: *mut c_void, _s: *mut ACameraCaptureSession, _r: *mut ACaptureRequest, res: *const ACameraMetadata) {
+    let sh = &*(ctx as *const Shared);
+    let md = res as *mut ACameraMetadata;
+    let mut m = ShotMeta::default();
+    if let Some(v) = read_i32s(md, T_SENSITIVITY).first() {
+        m.iso = *v;
+    }
+    if let Some(v) = read_i64(md, T_EXPOSURE_TIME) {
+        m.exp_ns = v;
+    }
+    if let Some(v) = read_f32(md, T_APERTURE) {
+        m.aperture = v;
+    }
+    if let Some(v) = read_f32(md, T_FOCAL) {
+        m.focal = v;
+    }
+    if let Some(v) = read_i32s(md, T_AE_COMP).first() {
+        m.ev_steps = *v;
+    }
+    if let Some(v) = read_u8(md, T_FLASH_STATE) {
+        m.flash_state = v;
+    }
+    if let Ok(mut v) = sh.metas.lock() {
+        if v.len() < 8 {
+            v.push(m);
+        }
+    }
+}
+
 pub struct Shared {
+    pub metas: Mutex<Vec<ShotMeta>>,
+    pub torch_shot: AtomicBool,
     pub frame: Mutex<Frame>,
     pub seq: AtomicU64,
     pub shots: Mutex<Vec<Vec<u8>>>,
@@ -298,6 +357,7 @@ pub struct Info {
     pub ev_min: i32,
     pub ev_max: i32,
     pub ev_step: f32,
+    pub phys: [f32; 2],
     pub sensor_ori: i32,
 }
 
@@ -350,6 +410,20 @@ unsafe fn read_u8(md: *mut ACameraMetadata, tag: u32) -> Option<u8> {
         return None;
     }
     Some(*(e.data as *const u8))
+}
+unsafe fn read_i64(md: *mut ACameraMetadata, tag: u32) -> Option<i64> {
+    let mut e = ConstEntry { tag: 0, typ: 0, count: 0, data: std::ptr::null() };
+    if ACameraMetadata_getConstEntry(md, tag, &mut e) != 0 || e.data.is_null() || e.count == 0 {
+        return None;
+    }
+    Some(*(e.data as *const i64))
+}
+unsafe fn read_f32s(md: *mut ACameraMetadata, tag: u32) -> Vec<f32> {
+    let mut e = ConstEntry { tag: 0, typ: 0, count: 0, data: std::ptr::null() };
+    if ACameraMetadata_getConstEntry(md, tag, &mut e) != 0 || e.data.is_null() {
+        return Vec::new();
+    }
+    std::slice::from_raw_parts(e.data as *const f32, e.count as usize).to_vec()
 }
 unsafe fn read_f32(md: *mut ACameraMetadata, tag: u32) -> Option<f32> {
     let mut e = ConstEntry { tag: 0, typ: 0, count: 0, data: std::ptr::null() };
@@ -446,7 +520,7 @@ impl Camera {
             };
 
             // đặc tính camera
-            let mut info = Info { act: [0, 0, 4000, 3000], max_zoom: 1.0, has_flash: false, ev_min: 0, ev_max: 0, ev_step: 0.0, sensor_ori: if o.front { 270 } else { 90 } };
+            let mut info = Info { act: [0, 0, 4000, 3000], max_zoom: 1.0, has_flash: false, ev_min: 0, ev_max: 0, ev_step: 0.0, phys: [0.0, 0.0], sensor_ori: if o.front { 270 } else { 90 } };
             let mut yuv: Vec<(i32, i32)> = Vec::new();
             let mut jpg: Vec<(i32, i32)> = Vec::new();
             let mut prv: Vec<(i32, i32)> = Vec::new();
@@ -457,6 +531,10 @@ impl Camera {
                     info.act = [a[0], a[1], a[2], a[3]];
                 }
                 info.max_zoom = read_f32(md, T_MAX_ZOOM).unwrap_or(1.0).max(1.0);
+                let ph = read_f32s(md, T_PHYS_SIZE);
+                if ph.len() >= 2 {
+                    info.phys = [ph[0], ph[1]];
+                }
                 info.has_flash = read_u8(md, T_FLASH_AVAIL).unwrap_or(0) == 1;
                 let r = read_i32s(md, T_AE_COMP_RANGE);
                 if r.len() >= 2 {
@@ -511,6 +589,8 @@ impl Camera {
                 shots: Mutex::new(Vec::new()),
                 lost: AtomicBool::new(false),
                 closing: AtomicBool::new(false),
+                metas: Mutex::new(Vec::new()),
+                torch_shot: AtomicBool::new(false),
                 luma: AtomicU32::new(128),
                 dark_pm: AtomicU32::new(0),
                 bright_pm: AtomicU32::new(0),
@@ -590,11 +670,11 @@ impl Camera {
                 }
                 if o.live {
                     let lsz = pick_aspect(&prv, jsize, 2_100_000).or_else(|| largest_under(&prv, 2_100_000)).unwrap_or((1280, 720));
-                    let enc = match video::Encoder::new(lsz.0, lsz.1, 30, 10_000_000, o.live_hevc) {
+                    let enc = match video::Encoder::new_with(lsz.0, lsz.1, 30, 10_000_000, o.live_hevc, 0.25) {
                         Ok(e) => e,
                         Err(e1) => {
                             if o.live_hevc {
-                                video::Encoder::new(lsz.0, lsz.1, 30, 10_000_000, false).map_err(|e2| format!("Live: {} / {}", e1, e2))?
+                                video::Encoder::new_with(lsz.0, lsz.1, 30, 10_000_000, false, 0.25).map_err(|e2| format!("Live: {} / {}", e1, e2))?
                             } else {
                                 return Err(format!("Live: {}", e1));
                             }
@@ -641,6 +721,19 @@ impl Camera {
             }
             c.apply()?;
             Ok(c)
+        }
+    }
+
+    fn capture_cb(&self) -> CaptureCb {
+        CaptureCb {
+            context: self.ctx as *mut c_void,
+            on_started: None,
+            on_progressed: None,
+            on_completed: Some(on_capture_done),
+            on_failed: None,
+            on_seq_done: None,
+            on_seq_abort: None,
+            on_buf_lost: None,
         }
     }
 
@@ -773,7 +866,12 @@ impl Camera {
             ACaptureRequest_setEntry_u8(req, T_JPEG_QUALITY, 1, &self.jpeg_q);
             let o: i32 = self.info.sensor_ori;
             ACaptureRequest_setEntry_i32(req, T_JPEG_ORIENTATION, 1, &o);
-            let st = ACameraCaptureSession_capture(self.sess, null_mut(), 1, &mut req, null_mut());
+            self.sh.torch_shot.store(self.ctl.torch && self.info.has_flash, Ordering::SeqCst);
+            if let Ok(mut v) = self.sh.metas.lock() {
+                v.clear();
+            }
+            let mut cb = self.capture_cb();
+            let st = ACameraCaptureSession_capture(self.sess, &mut cb as *mut CaptureCb as *mut c_void, 1, &mut req, null_mut());
             ACaptureRequest_free(req);
             if st != 0 {
                 return Err(format!("Chụp lỗi (mã {})", st));
@@ -806,7 +904,12 @@ impl Camera {
                 ACaptureRequest_setEntry_i32(r, T_AE_COMP, 1, &idx);
                 reqs[i] = r;
             }
-            let st = ACameraCaptureSession_capture(self.sess, null_mut(), 3, reqs.as_mut_ptr(), null_mut());
+            self.sh.torch_shot.store(self.ctl.torch && self.info.has_flash, Ordering::SeqCst);
+            if let Ok(mut v) = self.sh.metas.lock() {
+                v.clear();
+            }
+            let mut cb = self.capture_cb();
+            let st = ACameraCaptureSession_capture(self.sess, &mut cb as *mut CaptureCb as *mut c_void, 3, reqs.as_mut_ptr(), null_mut());
             for r in reqs.iter() {
                 if !r.is_null() {
                     ACaptureRequest_free(*r);
