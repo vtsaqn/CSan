@@ -79,6 +79,115 @@ pub fn orient_of(rot: i32) -> u16 {
     }
 }
 
+pub fn rot_of(o: u16) -> i32 {
+    match o {
+        6 => 90,
+        3 => 180,
+        8 => 270,
+        _ => 0,
+    }
+}
+
+/// Hướng (EXIF Orientation) có sẵn trong JPEG do camera tạo.
+pub fn read_orientation(j: &[u8]) -> Option<u16> {
+    if j.len() < 4 || j[0] != 0xff || j[1] != 0xd8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 3 < j.len() {
+        if j[i] != 0xff {
+            break;
+        }
+        let m = j[i + 1];
+        if m == 0xd9 || m == 0xda {
+            break;
+        }
+        let sl = ((j[i + 2] as usize) << 8) | j[i + 3] as usize;
+        if m == 0xe1 && i + 10 <= j.len() && &j[i + 4..i + 10] == b"Exif\0\0" {
+            let t = &j[i + 10..(i + 2 + sl).min(j.len())];
+            if t.len() < 8 {
+                return None;
+            }
+            let le = &t[0..2] == b"II";
+            let rd16 = |o: usize| -> Option<u16> {
+                if o + 2 > t.len() {
+                    None
+                } else if le {
+                    Some(u16::from_le_bytes([t[o], t[o + 1]]))
+                } else {
+                    Some(u16::from_be_bytes([t[o], t[o + 1]]))
+                }
+            };
+            let rd32 = |o: usize| -> Option<u32> {
+                if o + 4 > t.len() {
+                    None
+                } else if le {
+                    Some(u32::from_le_bytes([t[o], t[o + 1], t[o + 2], t[o + 3]]))
+                } else {
+                    Some(u32::from_be_bytes([t[o], t[o + 1], t[o + 2], t[o + 3]]))
+                }
+            };
+            let off = rd32(4)? as usize;
+            let n = rd16(off)? as usize;
+            for k in 0..n {
+                let en = off + 2 + 12 * k;
+                if rd16(en)? == 0x0112 {
+                    return rd16(en + 8);
+                }
+            }
+            return None;
+        }
+        i += 2 + sl;
+    }
+    None
+}
+
+/// Kích thước điểm ảnh (rộng, cao) lưu trong JPEG.
+pub fn jpeg_dims(j: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 2usize;
+    while i + 9 < j.len() {
+        if j[i] != 0xff {
+            i += 1;
+            continue;
+        }
+        let m = j[i + 1];
+        if m == 0xff {
+            i += 1;
+            continue;
+        }
+        if (0xC0..=0xCF).contains(&m) && m != 0xC4 && m != 0xC8 && m != 0xCC {
+            let h = ((j[i + 5] as u32) << 8) | j[i + 6] as u32;
+            let w = ((j[i + 7] as u32) << 8) | j[i + 8] as u32;
+            return Some((w, h));
+        }
+        if m == 0xd8 || m == 0x01 || (0xD0..=0xD7).contains(&m) {
+            i += 2;
+            continue;
+        }
+        if m == 0xd9 || m == 0xda {
+            break;
+        }
+        let sl = ((j[i + 2] as usize) << 8) | j[i + 3] as usize;
+        i += 2 + sl;
+    }
+    None
+}
+
+/// Hướng đúng cho ảnh camera: ưu tiên EXIF có sẵn (camera biết có xoay điểm ảnh hay chưa);
+/// nếu không có mà ảnh đã là khổ dọc thì coi như đã xoay; còn lại suy từ góc cảm biến.
+pub fn orient_for(jpeg: &[u8], rot: i32) -> u16 {
+    if let Some(o) = read_orientation(jpeg) {
+        return o;
+    }
+    if let Some((w, h)) = jpeg_dims(jpeg) {
+        let r = rot.rem_euclid(360);
+        if (r == 90 || r == 270) && h > w {
+            return 1;
+        }
+    }
+    orient_of(rot)
+}
+
 struct Ent {
     tag: u16,
     typ: u16,

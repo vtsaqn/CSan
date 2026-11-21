@@ -1,6 +1,13 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 2111.26.1 — 21/11/2026
+- Thêm nút chọn độ phân giải ảnh cho chế độ ẢNH và LIVE (hàng tuỳ chọn): 12MP → 8MP → 4MP → 2MP (khung JPEG lớn nhất không vượt mức đã chọn, đúng tỉ lệ 4:3/16:9); cũng có trong Cài đặt → "Độ phân giải ảnh". Đổi xong camera tự mở lại.
+
+## 2111.26 — 21/11/2026
+- Sửa Live: video Live giờ cùng tỉ lệ với ảnh (4:3 → khung 4:3 như 1440x1080/1920x1440; nếu máy không có khung đúng thì chọn khung có tỉ lệ gần nhất) thay vì rơi về 16:9.
+- Sửa ảnh bị nằm ngang khi cầm dọc: một số máy đã xoay sẵn điểm ảnh nên việc app tự ghi lại EXIF Orientation theo góc cảm biến làm xoay thêm lần nữa. Giờ ưu tiên EXIF hướng có sẵn từ camera; nếu không có mà ảnh đã là khổ dọc thì coi như đã xoay; chỉ khi còn lại mới suy từ góc cảm biến. Áp dụng cho ảnh thường, HDR, Live và các định dạng PNG/WebP/HEIC.
+
 ## 1911.26.1 — 19/11/2026
 - Live: sửa thời lượng trước/sau khi chụp. Bộ mã hóa Live đặt khung chủ đạo mỗi 0,25 giây (trước là 1 giây) và clip bắt đầu tại khung chủ đạo gần nhất mốc (chụp − 1,5 s) thay vì khung trước mốc, nên trước đây phần "trước khi chụp" có thể dài tới ~2,5 giây; giờ ≈ 1,5 giây trước + 1,5 giây sau. XMP Motion Photo ghi đúng thời điểm ảnh tĩnh trong clip (MotionPhotoPresentationTimestampUs) thay vì 0.
 - Ghi thông số chụp (EXIF) vào ảnh JPEG và PNG: hãng + mẫu máy, tiêu cự ống kính (mm) và quy đổi 35 mm, ISO, khẩu độ f, EV, tốc độ màn trập, flash, ngày giờ, hướng ảnh, phần mềm "CSar". Số liệu lấy từ kết quả chụp thật của camera. HDR: lấy khung EV gần 0. Tắt/bật ở Cài đặt → "Ghi thông số chụp vào ảnh". Chưa ghi EXIF cho WebP/HEIC.

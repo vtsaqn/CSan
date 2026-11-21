@@ -89,6 +89,7 @@ struct Set {
     tiks: i32,
     prot: i32,
     exif: bool,
+    pres: i32,
 }
 
 impl Set {
@@ -123,6 +124,7 @@ impl Set {
             tiks: c.int("tiks", 2) as i32,
             prot: c.int("prot", 0) as i32,
             exif: c.boolean("exif", true),
+            pres: c.int("pres", 0) as i32,
         }
     }
     fn store(&self, c: &mut Cfg) {
@@ -156,6 +158,7 @@ impl Set {
         c.set("tiks", self.tiks.to_string());
         c.set("prot", self.prot.to_string());
         c.set("exif", b(self.exif));
+        c.set("pres", self.pres.to_string());
     }
 }
 
@@ -363,6 +366,7 @@ impl App {
             live_hevc: self.s.lc == 1,
             compat: self.compat,
             rot_extra: self.s.prot.clamp(0, 3) * 90,
+            pres: self.s.pres.clamp(0, 3) as u8,
             live_audio: self.mode == 1 && self.s.audio && perm::has(&self.droid, MIC_PERM),
         }
     }
@@ -1095,6 +1099,7 @@ impl eframe::App for App {
             if !recording && (!overlay || self.more) {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     match self.mode {
                         0 | 1 => {
                             let f = ["Tắt", "Tự động", "Bật"];
@@ -1109,6 +1114,11 @@ impl eframe::App for App {
                             if chip(ui, &format!("⏱ {}s", TIMERS[self.s.tm.clamp(0, 2) as usize]), false).clicked() {
                                 self.s.tm = (self.s.tm + 1) % 3;
                                 s_changed = true;
+                            }
+                            if chip(ui, ["12MP", "8MP", "4MP", "2MP"][self.s.pres.clamp(0, 3) as usize], false).clicked() {
+                                self.s.pres = (self.s.pres + 1) % 4;
+                                s_changed = true;
+                                reopen = true;
                             }
                         }
                         2 => {
@@ -1348,6 +1358,7 @@ impl eframe::App for App {
             s_changed |= ui.checkbox(&mut self.s.level, "Thước thăng bằng").changed();
             s_changed |= ui.checkbox(&mut self.s.exif, "Ghi thông số chụp vào ảnh (EXIF: máy, mm, ISO, f, EV, tốc độ, flash)").changed();
             reopen |= combo(ui, "Tỉ lệ", &mut self.s.ratio, &["4:3", "16:9"]);
+            reopen |= combo(ui, "Độ phân giải ảnh", &mut self.s.pres, &["12 MP (tối đa)", "8 MP", "4 MP", "2 MP"]);
             s_changed |= combo(ui, "HDR", &mut self.s.hdr, &["Tắt", "Tự động", "Bật"]);
             s_changed |= combo(ui, "Chụp đêm", &mut self.s.night, &["Tắt", "Tự động", "Bật"]);
             s_changed |= combo(ui, "Flash", &mut self.s.flash, &["Tắt", "Tự động", "Bật"]);

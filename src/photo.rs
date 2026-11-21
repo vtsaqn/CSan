@@ -102,16 +102,17 @@ fn maybe_server(cfg: &Cfg, jpeg: Vec<u8>, prog: &mut dyn FnMut(&str, i32)) -> Ve
 
 /// Lưu 1 ảnh JPEG từ camera. Trả về đường dẫn tệp.
 pub fn save_jpeg(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+    let orient = exif::orient_for(&jpeg, rot);
     let jpeg = maybe_server(cfg, jpeg, prog);
     if cfg.int("ifmt", 0) == 0 {
         let _ = std::fs::create_dir_all(dir);
         let p = dir.join(format!("IMG_{}.jpg", stamp()));
-        let out = if cfg.boolean("exif", true) { exif::set_jpeg(&jpeg, &exif::app1(meta, exif::orient_of(rot))) } else { jpeg };
+        let out = if cfg.boolean("exif", true) { exif::set_jpeg(&jpeg, &exif::app1(meta, orient)) } else { jpeg };
         std::fs::write(&p, out).map_err(|e| e.to_string())?;
         return Ok(p);
     }
     let img = image::load_from_memory(&jpeg).map_err(|e| e.to_string())?.to_rgb8();
-    write_rgb(cfg, dir, img, rot, meta, prog)
+    write_rgb(cfg, dir, img, exif::rot_of(orient), meta, prog)
 }
 
 /// Ghép 3 ảnh HDR rồi lưu; lỗi thì lưu ảnh vừa sáng.
@@ -120,7 +121,8 @@ pub fn save_hdr(cfg: &Cfg, dir: &Path, jpegs: Vec<Vec<u8>>, rot: i32, meta: &Met
         return Err("Thiếu ảnh HDR".to_string());
     }
     prog("HDR: đang ghép ảnh…", -1);
-    match hdr::fuse(&jpegs[0], &jpegs[1], &jpegs[2]).and_then(|img| write_rgb(cfg, dir, img, rot, meta, &mut |_m: &str, _p: i32| {})) {
+    let orient = exif::orient_for(&jpegs[1], rot);
+    match hdr::fuse(&jpegs[0], &jpegs[1], &jpegs[2]).and_then(|img| write_rgb(cfg, dir, img, exif::rot_of(orient), meta, &mut |_m: &str, _p: i32| {})) {
         Ok(p) => Ok(p),
         Err(e) => {
             prog(&format!("HDR lỗi ({}) → lưu ảnh vừa sáng", e), -1);
@@ -131,9 +133,10 @@ pub fn save_hdr(cfg: &Cfg, dir: &Path, jpegs: Vec<Vec<u8>>, rot: i32, meta: &Met
 
 /// Live: JPEG + clip MP4 -> Motion Photo (.jpg). Lỗi ghép thì lưu ảnh thường.
 pub fn save_live(cfg: &Cfg, dir: &Path, jpeg: Vec<u8>, clip: Option<(Vec<u8>, f32, i64)>, rot: i32, meta: &Meta, prog: &mut dyn FnMut(&str, i32)) -> Result<PathBuf, String> {
+    let orient = exif::orient_for(&jpeg, rot);
     let mut jpeg = maybe_server(cfg, jpeg, prog);
     if cfg.boolean("exif", true) {
-        jpeg = exif::set_jpeg(&jpeg, &exif::app1(meta, exif::orient_of(rot)));
+        jpeg = exif::set_jpeg(&jpeg, &exif::app1(meta, orient));
     }
     let _ = std::fs::create_dir_all(dir);
     let p = dir.join(format!("LIVE_{}.jpg", stamp()));

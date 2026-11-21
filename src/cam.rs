@@ -395,6 +395,7 @@ pub struct OpenOpts {
     pub compat: bool,
     pub rot_extra: i32,
     pub live_audio: bool,
+    pub pres: u8,
 }
 
 unsafe fn read_i32s(md: *mut ACameraMetadata, tag: u32) -> Vec<i32> {
@@ -436,6 +437,19 @@ unsafe fn read_f32(md: *mut ACameraMetadata, tag: u32) -> Option<f32> {
 fn pick_aspect(list: &[(i32, i32)], r: (i32, i32), max_area: i64) -> Option<(i32, i32)> {
     let ok = |s: &&(i32, i32)| (s.0 as i64 * r.1 as i64 - s.1 as i64 * r.0 as i64).abs() <= (r.0.max(r.1) as i64) && s.0 as i64 * s.1 as i64 <= max_area;
     list.iter().filter(ok).max_by_key(|s| s.0 as i64 * s.1 as i64).cloned()
+}
+
+/// Khung có tỉ lệ gần nhất với `r` (dùng khi máy không có khung đúng tỉ lệ).
+fn closest_aspect(list: &[(i32, i32)], r: (i32, i32), max_area: i64) -> Option<(i32, i32)> {
+    let target = r.0 as f64 / r.1 as f64;
+    list.iter()
+        .filter(|s| s.0 as i64 * s.1 as i64 <= max_area)
+        .min_by(|a, b| {
+            let da = (a.0 as f64 / a.1 as f64 - target).abs();
+            let db = (b.0 as f64 / b.1 as f64 - target).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .cloned()
 }
 
 fn largest_under(list: &[(i32, i32)], max_area: i64) -> Option<(i32, i32)> {
@@ -564,7 +578,9 @@ impl Camera {
 
             // chọn kích thước
             let aspect = if o.wide { (16, 9) } else { (4, 3) };
-            let (jmax, pmax): (i64, i64) = if o.compat { (3_300_000, 400_000) } else { (12_600_000, 1_400_000) };
+            // độ phân giải ảnh: 0 = 12 MP (tối đa), 1 = 8 MP, 2 = 4 MP, 3 = 2 MP
+            let cap = [12_600_000i64, 8_400_000, 4_300_000, 2_200_000][(o.pres as usize).min(3)];
+            let (jmax, pmax): (i64, i64) = if o.compat { (cap.min(3_300_000), 400_000) } else { (cap, 1_400_000) };
             let jsize = pick_aspect(&jpg, aspect, jmax).or_else(|| largest_under(&jpg, jmax)).unwrap_or(if o.compat { (1280, 720) } else { (1920, 1080) });
             let target_h = match o.vres {
                 1 => 720,
@@ -669,7 +685,10 @@ impl Camera {
                     return Err("Không lấy được surface JPEG".into());
                 }
                 if o.live {
-                    let lsz = pick_aspect(&prv, jsize, 2_100_000).or_else(|| largest_under(&prv, 2_100_000)).unwrap_or((1280, 720));
+                    let lsz = pick_aspect(&prv, jsize, 2_400_000)
+                        .or_else(|| pick_aspect(&prv, jsize, 4_500_000))
+                        .or_else(|| closest_aspect(&prv, jsize, 2_400_000))
+                        .unwrap_or((1280, 720));
                     let enc = match video::Encoder::new_with(lsz.0, lsz.1, 30, 10_000_000, o.live_hevc, 0.25) {
                         Ok(e) => e,
                         Err(e1) => {
