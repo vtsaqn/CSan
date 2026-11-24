@@ -1,6 +1,12 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 2411.26 — 24/11/2026
+- Thêm chế độ STREAM (livestream) qua RTMP và RTMPS: tự viết giao thức RTMP (bắt tay, AMF0, chia chunk, FLV), RTMPS dùng SSLSocket của Android qua JNI (có SNI và kiểm tra tên máy chủ). Video H.264 (FLV chuẩn) hoặc H.265 (Enhanced RTMP, FourCC hvc1); âm thanh AAC từ mic chính.
+- Cài đặt riêng cho stream: URL, khoá luồng, codec (H.265 chỉ bật nếu máy có bộ mã hóa), bitrate video, độ phân giải 480p/720p/1080p, FPS 24/30/60, khung chủ đạo, hướng (dọc/ngang), bitrate âm thanh. Hàng tuỳ chọn trong chế độ STREAM có nút nhanh: Ổn định, Codec, Bitrate, Độ phân giải, Hướng.
+- Ổn định video qua plugin (OpenCV chạy trong app riêng): Tắt → khung hình đi thẳng tới bộ mã hóa và máy chủ; Bật → mỗi khung được gửi qua cổng localhost cho plugin xử lý rồi mới mã hóa. Cài đặt: mức ổn định, tỉ lệ khung giữ lại, độ làm mượt, cổng. Giao thức CSAR-STB v1 mô tả trong README. Plugin lỗi/không chạy thì phát tiếp không ổn định và báo cảnh báo.
+- Chưa có: WHIP/WebRTC và bản plugin OpenCV (sẽ là dự án riêng).
+
 ## 2111.26.1 — 21/11/2026
 - Thêm nút chọn độ phân giải ảnh cho chế độ ẢNH và LIVE (hàng tuỳ chọn): 12MP → 8MP → 4MP → 2MP (khung JPEG lớn nhất không vượt mức đã chọn, đúng tỉ lệ 4:3/16:9); cũng có trong Cài đặt → "Độ phân giải ảnh". Đổi xong camera tự mở lại.
 

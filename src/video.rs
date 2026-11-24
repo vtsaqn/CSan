@@ -170,15 +170,19 @@ impl Drop for Encoder {
     }
 }
 
-struct Audio {
-    codec: *mut AMediaCodec,
+pub(crate) struct Audio {
+    pub(crate) codec: *mut AMediaCodec,
     stream: *mut AAudioStream,
     frames: i64,
-    base_us: i64,
+    pub(crate) base_us: i64,
     eos_sent: bool,
 }
 
-unsafe fn audio_new() -> Option<Audio> {
+pub(crate) unsafe fn audio_new() -> Option<Audio> {
+    audio_new_br(128_000)
+}
+
+pub(crate) unsafe fn audio_new_br(bitrate: i32) -> Option<Audio> {
     let mut b: *mut AAudioStreamBuilder = null_mut();
     if AAudio_createStreamBuilder(&mut b) != 0 || b.is_null() {
         return None;
@@ -203,7 +207,7 @@ unsafe fn audio_new() -> Option<Audio> {
     AMediaFormat_setString(f, cs("mime").as_ptr(), cs("audio/mp4a-latm").as_ptr());
     AMediaFormat_setInt32(f, cs("sample-rate").as_ptr(), SAMPLE_RATE);
     AMediaFormat_setInt32(f, cs("channel-count").as_ptr(), 1);
-    AMediaFormat_setInt32(f, cs("bitrate").as_ptr(), 128_000);
+    AMediaFormat_setInt32(f, cs("bitrate").as_ptr(), bitrate);
     AMediaFormat_setInt32(f, cs("aac-profile").as_ptr(), 2);
     AMediaFormat_setInt32(f, cs("max-input-size").as_ptr(), 16384);
     let st = AMediaCodec_configure(codec, f, null_mut(), null_mut(), 1);
@@ -223,7 +227,7 @@ unsafe fn audio_new() -> Option<Audio> {
     Some(Audio { codec, stream: s, frames: 0, base_us, eos_sent: false })
 }
 
-unsafe fn audio_pump(a: &mut Audio, stopping: bool) {
+pub(crate) unsafe fn audio_pump(a: &mut Audio, stopping: bool) {
     if a.eos_sent {
         return;
     }
@@ -258,7 +262,7 @@ unsafe fn audio_pump(a: &mut Audio, stopping: bool) {
     a.frames += n as i64;
 }
 
-unsafe fn audio_free(a: &mut Audio) {
+pub(crate) unsafe fn audio_free(a: &mut Audio) {
     AAudioStream_requestStop(a.stream);
     AAudioStream_close(a.stream);
     AMediaCodec_stop(a.codec);

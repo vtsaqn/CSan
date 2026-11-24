@@ -9,7 +9,9 @@ mod media;
 mod motion;
 mod perm;
 mod photo;
+mod rtmp;
 mod server;
+mod stream;
 mod tik;
 mod video;
 
@@ -90,6 +92,20 @@ struct Set {
     prot: i32,
     exif: bool,
     pres: i32,
+    sturl: String,
+    stkey: String,
+    stc: i32,
+    stbr: i32,
+    stfps: i32,
+    stres: i32,
+    stki: i32,
+    stabr: i32,
+    stori: i32,
+    ss_on: bool,
+    ss_str: i32,
+    ss_crop: i32,
+    ss_smooth: i32,
+    ss_port: String,
 }
 
 impl Set {
@@ -125,6 +141,20 @@ impl Set {
             prot: c.int("prot", 0) as i32,
             exif: c.boolean("exif", true),
             pres: c.int("pres", 0) as i32,
+            sturl: c.str("sturl", ""),
+            stkey: c.str("stkey", ""),
+            stc: c.int("stc", 0) as i32,
+            stbr: c.int("stbr", 4000) as i32,
+            stfps: c.int("stfps", 30) as i32,
+            stres: c.int("stres", 1) as i32,
+            stki: c.int("stki", 1) as i32,
+            stabr: c.int("stabr", 128) as i32,
+            stori: c.int("stori", 0) as i32,
+            ss_on: c.boolean("ss_on", false),
+            ss_str: c.int("ss_str", 50) as i32,
+            ss_crop: c.int("ss_crop", 95) as i32,
+            ss_smooth: c.int("ss_smooth", 20) as i32,
+            ss_port: c.str("ss_port", "7788"),
         }
     }
     fn store(&self, c: &mut Cfg) {
@@ -159,6 +189,20 @@ impl Set {
         c.set("prot", self.prot.to_string());
         c.set("exif", b(self.exif));
         c.set("pres", self.pres.to_string());
+        c.set("sturl", self.sturl.trim().to_string());
+        c.set("stkey", self.stkey.trim().to_string());
+        c.set("stc", self.stc.to_string());
+        c.set("stbr", self.stbr.to_string());
+        c.set("stfps", self.stfps.to_string());
+        c.set("stres", self.stres.to_string());
+        c.set("stki", self.stki.to_string());
+        c.set("stabr", self.stabr.to_string());
+        c.set("stori", self.stori.to_string());
+        c.set("ss_on", b(self.ss_on));
+        c.set("ss_str", self.ss_str.to_string());
+        c.set("ss_crop", self.ss_crop.to_string());
+        c.set("ss_smooth", self.ss_smooth.to_string());
+        c.set("ss_port", self.ss_port.trim().to_string());
     }
 }
 
@@ -249,6 +293,10 @@ struct App {
     zoom_t: f32,
     zoom_c: f32,
     device: (String, String),
+    hevc_ok: bool,
+    st_last_bytes: u64,
+    st_last_t: Instant,
+    st_kbps: u64,
     top_y: f32,
     bottom_nat: f32,
     last_gap: f32,
@@ -306,6 +354,10 @@ impl App {
             zoom_t: 1.0,
             zoom_c: 1.0,
             device,
+            hevc_ok: stream::codec_supported(true),
+            st_last_bytes: 0,
+            st_last_t: Instant::now(),
+            st_kbps: 0,
             top_y: 60.0,
             bottom_nat: 330.0,
             last_gap: 0.0,
@@ -355,7 +407,7 @@ impl App {
         cam::OpenOpts {
             front: self.front,
             dir: self.dir.clone(),
-            video: self.is_video(),
+            video: self.mode == 2 || self.mode == 3,
             wide: self.s.ratio == 1,
             vres: self.s.vres.clamp(0, 2) as u8,
             vhevc: self.s.vc == 1,
@@ -367,6 +419,18 @@ impl App {
             compat: self.compat,
             rot_extra: self.s.prot.clamp(0, 3) * 90,
             pres: self.s.pres.clamp(0, 3) as u8,
+            stream: if self.mode == 4 {
+                Some(cam::StreamOpts {
+                    res: self.s.stres,
+                    orient: self.s.stori,
+                    fps: self.s.stfps,
+                    vbr_kbps: self.s.stbr,
+                    hevc: self.s.stc == 1 && self.hevc_ok,
+                    iframe_s: [1, 2, 4][self.s.stki.clamp(0, 2) as usize],
+                })
+            } else {
+                None
+            },
             live_audio: self.mode == 1 && self.s.audio && perm::has(&self.droid, MIC_PERM),
         }
     }
@@ -660,6 +724,8 @@ impl App {
             }
         }
 
+        self.poll_stream();
+
         // thước thăng bằng (gia tốc kế)
         if self.s.level && self.level.is_none() {
             self.level = Some(level::Level::start("zanq.fun.csar"));
@@ -813,7 +879,9 @@ impl App {
     }
 
     fn on_shutter(&mut self) {
-        if self.is_video() {
+        if self.mode == 4 {
+            self.toggle_stream();
+        } else if self.is_video() {
             self.toggle_record();
         } else if self.timer_end.is_some() {
             self.timer_end = None;
@@ -828,8 +896,86 @@ impl App {
         }
     }
 
+    /// Cập nhật tốc độ gửi, phát hiện lỗi từ luồng phát.
+    fn poll_stream(&mut self) {
+        let stats = self.cam.as_ref().and_then(|c| c.stream_stats());
+        let st = match stats {
+            Some(s) => s,
+            None => return,
+        };
+        let el = self.st_last_t.elapsed();
+        if el >= Duration::from_secs(1) {
+            let b = st.bytes.load(Ordering::Relaxed);
+            self.st_kbps = b.saturating_sub(self.st_last_bytes) * 8 / 1000 / el.as_secs().max(1);
+            self.st_last_bytes = b;
+            self.st_last_t = Instant::now();
+        }
+        let failed = st.failed.lock().ok().and_then(|g| g.clone());
+        if let Some(e) = failed {
+            if let Some(c) = self.cam.as_mut() {
+                c.stop_stream();
+            }
+            self.set_status(&format!("Lỗi livestream: {}", e));
+            self.reopen();
+        }
+    }
+
+    fn toggle_stream(&mut self) {
+        let streaming = self.cam.as_ref().map(|c| c.is_streaming()).unwrap_or(false);
+        if streaming {
+            if let Some(c) = self.cam.as_mut() {
+                c.stop_stream();
+            }
+            self.set_status("Đã dừng livestream");
+            self.reopen();
+            return;
+        }
+        if self.s.sturl.trim().is_empty() {
+            self.set_status("Chưa nhập URL livestream (Cài đặt → Livestream)");
+            return;
+        }
+        let mut audio = self.s.audio;
+        if audio && !perm::has(&self.droid, MIC_PERM) {
+            perm::request(&self.droid, &[MIC_PERM]);
+            audio = false;
+            self.set_status("Chưa có quyền micro: phát không tiếng (cấp quyền rồi phát lại)");
+        }
+        let stab = if self.s.ss_on {
+            Some(stream::StabParams {
+                port: self.s.ss_port.trim().parse().unwrap_or(7788),
+                strength: self.s.ss_str.clamp(0, 100) as u8,
+                crop: self.s.ss_crop.clamp(50, 100) as u8,
+                smooth: self.s.ss_smooth.clamp(1, 120) as u16,
+            })
+        } else {
+            None
+        };
+        let p = stream::StreamParams {
+            url: self.s.sturl.clone(),
+            key: self.s.stkey.clone(),
+            hevc: self.s.stc == 1 && self.hevc_ok,
+            vbr_kbps: self.s.stbr,
+            fps: self.s.stfps,
+            abr_kbps: self.s.stabr,
+            audio,
+            stab,
+        };
+        let jv = export::Jvm::from_app(&self.droid);
+        let r = self.cam.as_mut().map(|c| c.start_stream(p, jv));
+        match r {
+            Some(Ok(_)) => {
+                self.st_last_bytes = 0;
+                self.st_last_t = Instant::now();
+                self.st_kbps = 0;
+                self.set_status("Đang kết nối máy chủ…");
+            }
+            Some(Err(e)) => self.set_status(&format!("Không phát được: {}", e)),
+            None => self.set_status("Camera chưa mở"),
+        }
+    }
+
     fn toggle_record(&mut self) {
-        let recording = self.cam.as_ref().map(|c| c.rec.is_some()).unwrap_or(false);
+        let recording = self.cam.as_ref().map(|c| c.rec.is_some() || c.is_streaming()).unwrap_or(false);
         if recording {
             let r = self.cam.as_mut().map(|c| c.stop_rec());
             match r {
@@ -1059,7 +1205,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 if !recording {
-                    for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK")] {
+                    for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK"), (4, "STREAM")] {
                         if chip(ui, name, self.mode == m).clicked() && self.mode != m {
                             self.mode = m;
                             self.compat = false;
@@ -1133,7 +1279,7 @@ impl eframe::App for App {
                                 reopen = true;
                             }
                         }
-                        _ => {
+                        3 => {
                             let label = match &self.sel {
                                 Some(t) => format!("♪ {}", short(&t.title, 12)),
                                 None => "♪ Chọn nhạc".to_string(),
@@ -1151,8 +1297,40 @@ impl eframe::App for App {
                                 s_changed = true;
                             }
                         }
+                        _ => {
+                            if chip(ui, if self.s.ss_on { "Ổn định: Bật" } else { "Ổn định: Tắt" }, self.s.ss_on).clicked() {
+                                self.s.ss_on = !self.s.ss_on;
+                                s_changed = true;
+                            }
+                            if chip(ui, if self.s.stc == 1 { "H.265" } else { "H.264" }, false).clicked() {
+                                if self.hevc_ok {
+                                    self.s.stc = (self.s.stc + 1) % 2;
+                                    s_changed = true;
+                                    reopen = true;
+                                } else {
+                                    self.s.stc = 0;
+                                    self.set_status("Máy này không có bộ mã hóa H.265");
+                                }
+                            }
+                            if chip(ui, &format!("{}k", self.s.stbr), false).clicked() {
+                                let list = [1000, 2000, 3000, 4000, 6000, 8000];
+                                self.s.stbr = list.iter().cloned().find(|v| *v > self.s.stbr).unwrap_or(list[0]);
+                                s_changed = true;
+                                reopen = true;
+                            }
+                            if chip(ui, ["480p", "720p", "1080p"][self.s.stres.clamp(0, 2) as usize], false).clicked() {
+                                self.s.stres = (self.s.stres + 1) % 3;
+                                s_changed = true;
+                                reopen = true;
+                            }
+                            if chip(ui, ["Dọc", "Ngang", "Ngang ↻"][self.s.stori.clamp(0, 2) as usize], false).clicked() {
+                                self.s.stori = (self.s.stori + 1) % 3;
+                                s_changed = true;
+                                reopen = true;
+                            }
+                        }
                     }
-                    if chip(ui, ["4:3", "16:9"][self.s.ratio.clamp(0, 1) as usize], false).clicked() {
+                    if self.mode != 4 && chip(ui, ["4:3", "16:9"][self.s.ratio.clamp(0, 1) as usize], false).clicked() {
                         self.s.ratio = (self.s.ratio + 1) % 2;
                         s_changed = true;
                         reopen = true;
@@ -1221,7 +1399,18 @@ impl eframe::App for App {
                 }
                 // thông báo + thời gian quay: vẽ đè lên ảnh, không chiếm chỗ bố cục
                 let mut msg: Option<(String, egui::Color32)> = None;
-                if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
+                if let Some(t0) = self.cam.as_ref().and_then(|c| c.stream_t0()) {
+                    let sec = t0.elapsed().as_secs();
+                    let stats = self.cam.as_ref().and_then(|c| c.stream_stats());
+                    let stab = stats.as_ref().map(|s| s.stab_on.load(Ordering::Relaxed)).unwrap_or(false);
+                    let state = stats.as_ref().and_then(|s| s.state.lock().ok().map(|g| g.clone())).unwrap_or_default();
+                    let mut t = format!("● LIVE {:02}:{:02} · {} kbps{}", sec / 60, sec % 60, self.st_kbps, if stab { " · ổn định" } else { "" });
+                    if state.contains('⚠') || state.starts_with("Đang kết nối") {
+                        t.push('\n');
+                        t.push_str(&state);
+                    }
+                    msg = Some((t, egui::Color32::LIGHT_RED));
+                } else if let Some(d) = self.cam.as_ref().and_then(|c| c.rec_elapsed()) {
                     let sec = d.as_secs();
                     msg = Some((format!("● {:02}:{:02}", sec / 60, sec % 60), egui::Color32::LIGHT_RED));
                 } else if !self.last_status.is_empty() {
@@ -1378,6 +1567,50 @@ impl eframe::App for App {
             s_changed |= ui.checkbox(&mut self.s.stab, "Ổn định video qua server").changed();
             s_changed |= ui.add(egui::Slider::new(&mut self.s.stabscale, 70..=100).text("Tỉ lệ khung ổn định %")).changed();
             s_changed |= ui.checkbox(&mut self.s.stabext, "Mở rộng viền").changed();
+            ui.separator();
+            ui.strong("Livestream (RTMP / RTMPS)");
+            ui.label("URL máy chủ (rtmp://host/app hoặc rtmps://host:443/app)");
+            let r = ui.add(egui::TextEdit::singleline(&mut self.s.sturl).hint_text("rtmps://a.rtmps.youtube.com/live2"));
+            if r.gained_focus() {
+                self.droid.show_soft_input(true);
+            }
+            s_changed |= r.changed();
+            ui.label("Khoá luồng (stream key)");
+            let r = ui.add(egui::TextEdit::singleline(&mut self.s.stkey).password(true));
+            if r.gained_focus() {
+                self.droid.show_soft_input(true);
+            }
+            s_changed |= r.changed();
+            reopen |= combo(ui, "Codec video", &mut self.s.stc, &["H.264 (AVC)", "H.265 (HEVC)"]);
+            if !self.hevc_ok {
+                ui.small("Máy này không có bộ mã hóa H.265 → sẽ dùng H.264.");
+            }
+            reopen |= ui.add(egui::Slider::new(&mut self.s.stbr, 500..=12000).text("Bitrate video (kbps)")).changed();
+            reopen |= combo(ui, "Độ phân giải stream", &mut self.s.stres, &["480p", "720p", "1080p"]);
+            let mut fi = match self.s.stfps {
+                24 => 0,
+                60 => 2,
+                _ => 1,
+            };
+            if combo(ui, "FPS", &mut fi, &["24", "30", "60"]) {
+                self.s.stfps = [24, 30, 60][fi.clamp(0, 2) as usize];
+                reopen = true;
+            }
+            reopen |= combo(ui, "Khung chủ đạo", &mut self.s.stki, &["1 giây", "2 giây", "4 giây"]);
+            reopen |= combo(ui, "Hướng stream", &mut self.s.stori, &["Dọc (9:16)", "Ngang (16:9)", "Ngang ngược"]);
+            s_changed |= ui.add(egui::Slider::new(&mut self.s.stabr, 32..=256).text("Bitrate âm thanh (kbps)")).changed();
+            ui.separator();
+            ui.strong("Ổn định video cho livestream (plugin OpenCV)");
+            s_changed |= ui.checkbox(&mut self.s.ss_on, "Bật ổn định (cần app plugin đang chạy)").changed();
+            s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_str, 0..=100).text("Mức ổn định")).changed();
+            s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_crop, 80..=100).text("Tỉ lệ khung giữ lại (%)")).changed();
+            s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_smooth, 3..=60).text("Độ làm mượt (khung)")).changed();
+            ui.label("Cổng plugin (localhost)");
+            let r = ui.add(egui::TextEdit::singleline(&mut self.s.ss_port).hint_text("7788"));
+            if r.gained_focus() {
+                self.droid.show_soft_input(true);
+            }
+            s_changed |= r.changed();
             ui.separator();
             ui.small(format!("Thư mục ảnh/video + config: {}", self.dir.display()));
         });

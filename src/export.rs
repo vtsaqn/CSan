@@ -17,7 +17,7 @@ impl Jvm {
     }
 }
 
-fn run<R>(j: Jvm, f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<R>) -> Result<R, String> {
+pub fn run<R>(j: Jvm, f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<R>) -> Result<R, String> {
     let vm = unsafe { JavaVM::from_raw(j.vm as *mut jni::sys::JavaVM) }.map_err(|e| e.to_string())?;
     let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
     let act = unsafe { JObject::from_raw(j.act as jni::sys::jobject) };

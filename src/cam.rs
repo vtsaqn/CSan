@@ -1,12 +1,14 @@
 //! Camera2 qua NDK (libcamera2ndk + libmediandk): xem trước YUV + chụp JPEG.
 #![allow(non_camel_case_types, non_snake_case, dead_code)]
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use crate::export;
+use crate::stream;
 use crate::video;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ---------- kiểu mờ (opaque) ----------
 pub enum ACameraManager {}
@@ -107,6 +109,7 @@ extern "C" {
     fn AImageReader_setImageListener(r: *mut AImageReader, l: *mut ImgListener) -> c_int;
     fn AImageReader_acquireLatestImage(r: *mut AImageReader, out: *mut *mut AImage) -> c_int;
     fn AImage_delete(i: *mut AImage);
+    fn AImage_getTimestamp(i: *const AImage, out: *mut i64) -> c_int;
     fn AImage_getPlaneData(i: *const AImage, idx: c_int, data: *mut *mut u8, len: *mut c_int) -> c_int;
     fn AImage_getPlaneRowStride(i: *const AImage, idx: c_int, out: *mut c_int) -> c_int;
     fn AImage_getPlanePixelStride(i: *const AImage, idx: c_int, out: *mut c_int) -> c_int;
@@ -331,6 +334,92 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
     }
 }
 
+/// Dữ liệu dùng chung cho luồng livestream (callback của ImageReader stream).
+pub struct StreamShared {
+    tx: std::sync::mpsc::SyncSender<stream::StreamFrame>,
+    active: Arc<AtomicBool>,
+    rot: i32,
+    sw: usize,
+    sh: usize,
+    ow: usize,
+    oh: usize,
+    first_ts: AtomicI64,
+}
+
+unsafe extern "C" fn on_stream(ctx: *mut c_void, reader: *mut AImageReader) {
+    let ss = &*(ctx as *const StreamShared);
+    let mut img: *mut AImage = null_mut();
+    if AImageReader_acquireLatestImage(reader, &mut img) != 0 || img.is_null() {
+        return;
+    }
+    if ss.active.load(Ordering::Relaxed) {
+        convert_stream(ss, img);
+    }
+    AImage_delete(img);
+}
+
+/// YUV_420_888 → NV12 đóng gói chặt, xoay theo hướng stream.
+unsafe fn convert_stream(ss: &StreamShared, img: *mut AImage) {
+    let (y, ys, _) = match plane(img, 0) {
+        Some(v) => v,
+        None => return,
+    };
+    let (u, us, ups) = match plane(img, 1) {
+        Some(v) => v,
+        None => return,
+    };
+    let (v, vs, vps) = match plane(img, 2) {
+        Some(v) => v,
+        None => return,
+    };
+    let (sw, sh, ow, oh) = (ss.sw, ss.sh, ss.ow, ss.oh);
+    if sw < 2 || sh < 2 || ow < 2 || oh < 2 {
+        return;
+    }
+    let mut out = vec![0u8; ow * oh * 3 / 2];
+    for dy in 0..oh {
+        for dx in 0..ow {
+            let (sx, sy) = match ss.rot {
+                90 => (dy, sh - 1 - dx),
+                270 => (sw - 1 - dy, dx),
+                180 => (sw - 1 - dx, sh - 1 - dy),
+                _ => (dx, dy),
+            };
+            let yi = sy * ys + sx;
+            if yi < y.len() {
+                out[dy * ow + dx] = y[yi];
+            }
+        }
+    }
+    let (cw, ch, csw, csh) = (ow / 2, oh / 2, sw / 2, sh / 2);
+    let base = ow * oh;
+    for dy in 0..ch {
+        for dx in 0..cw {
+            let (sx, sy) = match ss.rot {
+                90 => (dy, csh - 1 - dx),
+                270 => (csw - 1 - dy, dx),
+                180 => (csw - 1 - dx, csh - 1 - dy),
+                _ => (dx, dy),
+            };
+            let iu = sy * us + sx * ups;
+            let iv = sy * vs + sx * vps;
+            let o = base + dy * ow + dx * 2;
+            if iu < u.len() && iv < v.len() {
+                out[o] = u[iu];
+                out[o + 1] = v[iv];
+            }
+        }
+    }
+    let mut ts: i64 = 0;
+    AImage_getTimestamp(img, &mut ts);
+    let mut first = ss.first_ts.load(Ordering::Relaxed);
+    if first < 0 {
+        ss.first_ts.store(ts, Ordering::Relaxed);
+        first = ts;
+    }
+    let _ = ss.tx.try_send(stream::StreamFrame { nv12: out, w: ow as i32, h: oh as i32, ts_us: (ts - first) / 1000 });
+}
+
 unsafe extern "C" fn on_jpeg(ctx: *mut c_void, reader: *mut AImageReader) {
     let sh = &*(ctx as *const Shared);
     if sh.closing.load(Ordering::SeqCst) {
@@ -396,6 +485,16 @@ pub struct OpenOpts {
     pub rot_extra: i32,
     pub live_audio: bool,
     pub pres: u8,
+    pub stream: Option<StreamOpts>,
+}
+
+pub struct StreamOpts {
+    pub res: i32,
+    pub orient: i32,
+    pub fps: i32,
+    pub vbr_kbps: i32,
+    pub hevc: bool,
+    pub iframe_s: i32,
 }
 
 unsafe fn read_i32s(md: *mut ACameraMetadata, tag: u32) -> Vec<i32> {
@@ -492,6 +591,15 @@ pub struct Camera {
     sess_cb: Box<SessCb>,
     lis_p: Box<ImgListener>,
     lis_j: Box<ImgListener>,
+    rd_s: *mut AImageReader,
+    out_s: *mut ACaptureSessionOutput,
+    tgt_s: *mut ACameraOutputTarget,
+    lis_s: Box<ImgListener>,
+    ss: *const StreamShared,
+    benc: Option<stream::BufEncoder>,
+    srx: Option<std::sync::mpsc::Receiver<stream::StreamFrame>>,
+    streamer: Option<stream::Streamer>,
+    sactive: Arc<AtomicBool>,
 }
 
 impl Camera {
@@ -596,7 +704,18 @@ impl Camera {
                 };
                 pick((aspect.0 as i64, aspect.1 as i64)).or_else(|| pick((16, 9))).unwrap_or(if o.wide { (1920, 1080) } else { (1440, 1080) })
             };
-            let refsz = if o.video { vsize } else { jsize };
+            let ssize: (i32, i32) = if let Some(so) = &o.stream {
+                let th = [480, 720, 1080][so.res.clamp(0, 2) as usize];
+                yuv.iter()
+                    .cloned()
+                    .filter(|s| s.1 == th && (s.0 as i64 * 9 - s.1 as i64 * 16).abs() <= 16)
+                    .max_by_key(|s| s.0)
+                    .or_else(|| yuv.iter().cloned().filter(|s| s.1 <= th && (s.0 as i64 * 9 - s.1 as i64 * 16).abs() <= 16).max_by_key(|s| s.0 as i64 * s.1 as i64))
+                    .unwrap_or((1280, 720))
+            } else {
+                (0, 0)
+            };
+            let refsz = if o.stream.is_some() { ssize } else if o.video { vsize } else { jsize };
             let psize = pick_aspect(&yuv, refsz, pmax).or_else(|| largest_under(&yuv, pmax)).unwrap_or((640, 480));
 
             let sh = Arc::new(Shared {
@@ -621,14 +740,14 @@ impl Camera {
                 sh,
                 info,
                 ctl: Ctl::default(),
-                video: o.video,
+                video: o.video || o.stream.is_some(),
                 vsize,
                 jsize,
                 rec: None,
                 enc: None,
                 live: None,
                 jpeg_q: o.jpeg_q,
-                vfps: o.vfps,
+                vfps: o.stream.as_ref().map(|s| s.fps).unwrap_or(o.vfps),
                 dir: o.dir.clone(),
                 ctx,
                 mgr,
@@ -648,6 +767,15 @@ impl Camera {
                 sess_cb: Box::new(SessCb { context: ctxp, on_closed: Some(on_sess), on_ready: Some(on_sess), on_active: Some(on_sess) }),
                 lis_p: Box::new(ImgListener { context: ctxp, on_image_available: Some(on_preview) }),
                 lis_j: Box::new(ImgListener { context: ctxp, on_image_available: Some(on_jpeg) }),
+                rd_s: null_mut(),
+                out_s: null_mut(),
+                tgt_s: null_mut(),
+                lis_s: Box::new(ImgListener { context: null_mut(), on_image_available: None }),
+                ss: std::ptr::null(),
+                benc: None,
+                srx: None,
+                streamer: None,
+                sactive: Arc::new(AtomicBool::new(false)),
             };
 
             if AImageReader_new(psize.0, psize.1, FMT_YUV, 3, &mut c.rd_p) != 0 || c.rd_p.is_null() {
@@ -661,6 +789,7 @@ impl Camera {
             }
             let mut win_x: *mut ANativeWindow = null_mut();
             let mut win_l: *mut ANativeWindow = null_mut();
+            let mut win_st: *mut ANativeWindow = null_mut();
             if o.video {
                 let bitrate = o.vbr_kbps.max(1000) * 1000;
                 let enc = match video::Encoder::new(vsize.0, vsize.1, o.vfps, bitrate, o.vhevc) {
@@ -675,7 +804,7 @@ impl Camera {
                 };
                 win_x = enc.window;
                 c.enc = Some(enc);
-            } else {
+            } else if o.stream.is_none() {
                 if AImageReader_new(jsize.0, jsize.1, FMT_JPEG, 4, &mut c.rd_j) != 0 || c.rd_j.is_null() {
                     return Err(format!("Không tạo được reader JPEG {}x{}", jsize.0, jsize.1));
                 }
@@ -704,6 +833,33 @@ impl Camera {
                 }
             }
 
+            if let Some(so) = &o.stream {
+                let rot = match so.orient {
+                    0 => c.info.sensor_ori,
+                    1 => 0,
+                    _ => 180,
+                };
+                let (ow, oh) = if rot == 90 || rot == 270 { (ssize.1, ssize.0) } else { (ssize.0, ssize.1) };
+                let enc = stream::BufEncoder::new(ow, oh, so.fps, so.vbr_kbps, so.hevc, so.iframe_s)?;
+                let (tx, rx) = std::sync::mpsc::sync_channel::<stream::StreamFrame>(2);
+                let active = Arc::new(AtomicBool::new(false));
+                let ssh = Arc::new(StreamShared { tx, active: active.clone(), rot, sw: ssize.0 as usize, sh: ssize.1 as usize, ow: ow as usize, oh: oh as usize, first_ts: AtomicI64::new(-1) });
+                let ssp = Arc::into_raw(ssh);
+                c.ss = ssp;
+                c.lis_s = Box::new(ImgListener { context: ssp as *mut c_void, on_image_available: Some(on_stream) });
+                if AImageReader_new(ssize.0, ssize.1, FMT_YUV, 3, &mut c.rd_s) != 0 || c.rd_s.is_null() {
+                    return Err(format!("Không tạo được reader stream {}x{}", ssize.0, ssize.1));
+                }
+                AImageReader_setImageListener(c.rd_s, &mut *c.lis_s);
+                AImageReader_getWindow(c.rd_s, &mut win_st);
+                if win_st.is_null() {
+                    return Err("Không lấy được surface stream".into());
+                }
+                c.benc = Some(enc);
+                c.srx = Some(rx);
+                c.sactive = active;
+            }
+
             let st = ACameraManager_openCamera(c.mgr, id.as_ptr(), &mut *c.dev_cb, &mut c.dev);
             if st != 0 || c.dev.is_null() {
                 return Err(format!("Mở camera lỗi (mã {})", st));
@@ -718,10 +874,15 @@ impl Camera {
                 ACaptureSessionOutput_create(win_x, &mut c.out_v);
                 ACaptureSessionOutputContainer_add(c.cont, c.out_v);
                 ACameraOutputTarget_create(win_x, &mut c.tgt_v);
-            } else {
+            } else if o.stream.is_none() {
                 ACaptureSessionOutput_create(win_x, &mut c.out_j);
                 ACaptureSessionOutputContainer_add(c.cont, c.out_j);
                 ACameraOutputTarget_create(win_x, &mut c.tgt_j);
+            }
+            if o.stream.is_some() && !win_st.is_null() {
+                ACaptureSessionOutput_create(win_st, &mut c.out_s);
+                ACaptureSessionOutputContainer_add(c.cont, c.out_s);
+                ACameraOutputTarget_create(win_st, &mut c.tgt_s);
             }
             if o.live && !win_l.is_null() {
                 ACaptureSessionOutput_create(win_l, &mut c.out_v);
@@ -837,6 +998,9 @@ impl Camera {
             let tpl = if self.video { TEMPLATE_RECORD } else { TEMPLATE_PREVIEW };
             let r = self.make_req(tpl, false)?;
             ACaptureRequest_addTarget(r, self.tgt_p);
+            if !self.tgt_s.is_null() {
+                ACaptureRequest_addTarget(r, self.tgt_s);
+            }
             if self.ctl.recording && !self.tgt_v.is_null() {
                 ACaptureRequest_addTarget(r, self.tgt_v);
             }
@@ -983,6 +1147,33 @@ impl Camera {
         self.live.is_some()
     }
 
+    /// Bắt đầu livestream: bộ mã hóa + luồng khung chuyển cho Streamer. Dừng xong phải mở lại camera.
+    pub fn start_stream(&mut self, p: stream::StreamParams, jvm: export::Jvm) -> Result<(), String> {
+        let enc = self.benc.take().ok_or_else(|| "Chưa có bộ mã hóa stream (mở lại camera)".to_string())?;
+        let rx = self.srx.take().ok_or_else(|| "Chưa có luồng khung stream".to_string())?;
+        self.streamer = Some(stream::Streamer::start(enc, rx, self.sactive.clone(), p, jvm));
+        Ok(())
+    }
+
+    pub fn stop_stream(&mut self) {
+        self.sactive.store(false, Ordering::SeqCst);
+        if let Some(s) = self.streamer.take() {
+            s.stop();
+        }
+    }
+
+    pub fn is_streaming(&self) -> bool {
+        self.streamer.is_some()
+    }
+
+    pub fn stream_stats(&self) -> Option<Arc<stream::Stats>> {
+        self.streamer.as_ref().map(|s| s.stats.clone())
+    }
+
+    pub fn stream_t0(&self) -> Option<Instant> {
+        self.streamer.as_ref().map(|s| s.t0)
+    }
+
     pub fn rec_elapsed(&self) -> Option<Duration> {
         self.rec.as_ref().map(|r| r.t0.elapsed())
     }
@@ -992,6 +1183,10 @@ impl Drop for Camera {
     fn drop(&mut self) {
         unsafe {
             self.sh.closing.store(true, Ordering::SeqCst);
+            self.sactive.store(false, Ordering::SeqCst);
+            if let Some(s) = self.streamer.take() {
+                s.stop();
+            }
             if let Some(r) = self.rec.take() {
                 let _ = r.stop();
             }
@@ -1006,12 +1201,12 @@ impl Drop for Camera {
             if !self.req_p.is_null() {
                 ACaptureRequest_free(self.req_p);
             }
-            for t in [self.tgt_p, self.tgt_j, self.tgt_v] {
+            for t in [self.tgt_p, self.tgt_j, self.tgt_v, self.tgt_s] {
                 if !t.is_null() {
                     ACameraOutputTarget_free(t);
                 }
             }
-            for o in [self.out_p, self.out_j, self.out_v] {
+            for o in [self.out_p, self.out_j, self.out_v, self.out_s] {
                 if !o.is_null() {
                     ACaptureSessionOutput_free(o);
                 }
@@ -1024,6 +1219,14 @@ impl Drop for Camera {
             }
             if !self.rd_j.is_null() {
                 AImageReader_delete(self.rd_j);
+            }
+            if !self.rd_s.is_null() {
+                AImageReader_delete(self.rd_s);
+            }
+            self.benc = None;
+            self.srx = None;
+            if !self.ss.is_null() {
+                drop(Arc::from_raw(self.ss));
             }
             self.enc = None;
             if !self.mgr.is_null() {

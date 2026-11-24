@@ -30,3 +30,15 @@ TikTok: chọn/cắt nhạc, đổi tốc độ, ghép nhạc.
 - Live cần máy cho phép 3 luồng cùng lúc (xem trước + JPEG + mã hóa); nếu không, chế độ LIVE báo lỗi.
 - TikTok/nhạc cần cấp quyền đọc âm thanh; bấm "Làm mới" trong danh sách nhạc sau khi cấp quyền.
 - Ảnh/video lưu ở thư viện máy: DCIM/Csan. Tệp tạm và config.txt nằm ở `Android/data/zanq.fun.csar/files/`.
+
+## Livestream (chế độ STREAM)
+Giao thức: `rtmp://host[:1935]/app` và `rtmps://host[:443]/app`; khoá luồng nhập riêng hoặc nối sau URL (`.../app/KEY`).
+H.265 dùng Enhanced RTMP (FourCC `hvc1`) nên máy chủ phải hỗ trợ (YouTube, Twitch Enhanced Broadcasting…); nginx-rtmp bản gốc thì dùng H.264.
+Cần để màn hình sáng và app ở nền trước khi phát. WHIP/WebRTC chưa có.
+
+## Plugin ổn định video — giao thức CSAR-STB v1
+Plugin là app riêng, mở cổng TCP `127.0.0.1:<cổng>` (mặc định 7788) khi đang chạy. Mọi số nhiều byte theo big-endian.
+1. App → plugin (khi bắt đầu phát): `"CSARSTB1"` + `w`(u16) + `h`(u16) + `fps`(u8) + `mức ổn định`(u8, 0–100) + `tỉ lệ khung giữ lại`(u8, %) + `cửa sổ làm mượt`(u16, số khung).
+2. Plugin → app: `"CSAROK1"` (7 byte).
+3. Mỗi khung: app → plugin `len`(u32) + NV12 đóng gói chặt (`w*h*3/2` byte, đã xoay đúng hướng); plugin → app `len`(u32) + NV12 cùng kích thước đã ổn định. `len = 0` nghĩa là dùng nguyên khung gốc.
+Mỗi khung chờ tối đa 300 ms; quá hạn hoặc lỗi thì app tắt ổn định và phát tiếp không ổn định.
