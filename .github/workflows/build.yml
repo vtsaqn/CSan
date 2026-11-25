@@ -42,8 +42,6 @@ jobs:
           echo "--- ndk:"; ls "$SDK/ndk" || true
           echo "--- NDK mặc định: $ANDROID_NDK_HOME"; cat "$ANDROID_NDK_HOME/source.properties" || true
           echo "--- Cargo.toml:"; grep -m1 '^version' Cargo.toml; grep -m1 '^display_version' Cargo.toml
-          # đảm bảo có build-tools 34.0.0 + platform 34, rồi bỏ các bản build-tools khác
-          # để cargo-apk không vấp tên thư mục lạ (lỗi "Invalid semver")
           SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -d "$SDK/build-tools/34.0.0" ] || [ ! -d "$SDK/platforms/android-34" ]; then
             yes | "$SM" --licenses >/dev/null 2>&1 || true
@@ -76,7 +74,7 @@ jobs:
       - name: Build
         run: env -u ANDROID_SDK_ROOT cargo apk build --release
 
-      # plugin ổn định (thuần Rust). Lỗi ở đây không làm hỏng bản app chính.
+      # Plugin ổn định (thuần Rust).
       - name: Build plugin CSar Stab
         continue-on-error: true
         run: env -u ANDROID_SDK_ROOT cargo apk build --release -p csar-stab
@@ -88,7 +86,6 @@ jobs:
           echo "v=$V" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           ls -la target/release/apk/ || true
-          # chọn đúng 1 tệp APK (ưu tiên CSan.apk, nếu không thì tệp lớn nhất)
           APK=target/release/apk/CSar.apk
           if [ ! -f "$APK" ]; then APK=$(ls -S target/release/apk/*.apk | head -n 1); fi
           echo "Dùng: $APK"
@@ -101,7 +98,7 @@ jobs:
           path: dist/*.apk
 
   plugin-opencv:
-    # Bản plugin dùng OpenCV (tuỳ chọn). Lỗi ở job này không ảnh hưởng job build chính.
+    # Bản plugin dùng OpenCV (tuỳ chọn).
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
@@ -138,8 +135,6 @@ jobs:
           echo "--- ndk:"; ls "$SDK/ndk" || true
           echo "--- NDK mặc định: $ANDROID_NDK_HOME"; cat "$ANDROID_NDK_HOME/source.properties" || true
           echo "--- Cargo.toml:"; grep -m1 '^version' Cargo.toml; grep -m1 '^display_version' Cargo.toml
-          # đảm bảo có build-tools 34.0.0 + platform 34, rồi bỏ các bản build-tools khác
-          # để cargo-apk không vấp tên thư mục lạ (lỗi "Invalid semver")
           SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -d "$SDK/build-tools/34.0.0" ] || [ ! -d "$SDK/platforms/android-34" ]; then
             yes | "$SM" --licenses >/dev/null 2>&1 || true
@@ -169,6 +164,23 @@ jobs:
           echo "CARGO_APK_RELEASE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
 
+      # FIX: Cài LLVM và libclang để clang-sys/bindgen tìm được libclang.so.
+      - name: Install LLVM and libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm llvm-dev clang libclang-dev
+
+          LLVM_CONFIG="$(command -v llvm-config)"
+          LLVM_LIB="$("$LLVM_CONFIG" --libdir)"
+
+          echo "LLVM_CONFIG_PATH=$LLVM_CONFIG" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$LLVM_LIB" >> "$GITHUB_ENV"
+
+          echo "LLVM version:"
+          "$LLVM_CONFIG" --version
+
+          echo "LLVM library directory: $LLVM_LIB"
+          find "$LLVM_LIB" -maxdepth 1 -name 'libclang.so*' -print
 
       - name: OpenCV Android SDK
         run: |
