@@ -153,6 +153,19 @@ pub fn device_names(app: &AndroidApp) -> (String, String) {
     .unwrap_or_default()
 }
 
+/// Mở app plugin ổn định (zanq.fun.csarstab) bằng intent tường minh.
+pub fn open_plugin(app: &AndroidApp) -> Result<(), String> {
+    with_env_res(app, |env, act| {
+        let intent = env.new_object("android/content/Intent", "()V", &[])?;
+        let pkg = env.new_string("zanq.fun.csarstab")?;
+        let cls = env.new_string("android.app.NativeActivity")?;
+        env.call_method(&intent, "setClassName", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", &[JValue::from(&pkg), JValue::from(&cls)])?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?;
+        env.call_method(act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::from(&intent)])?;
+        Ok(())
+    })
+}
+
 /// Trình phát nhạc (android.media.MediaPlayer).
 pub struct Player {
     app: AndroidApp,

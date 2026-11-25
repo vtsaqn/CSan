@@ -9,5 +9,6 @@ set -e
 if [ $# -ge 3 ]; then D=$1; M=$2; Y=$3; R=${4:-1}; else D=$(date +%d); M=$(date +%m); Y=$(date +%y); R=${1:-1}; fi
 if [ "$R" = "1" ]; then V="$D$M.$Y"; CV="$((10#$Y)).$((10#$M)).$((10#$D))"; else V="$D$M.$Y.$R"; CV="$((10#$Y)).$((10#$M)).$((10#$D))-$R"; fi
 sed -i "0,/^version = .*/s//version = \"$CV\"/" Cargo.toml
+sed -i "0,/^version = .*/s//version = \"$CV\"/" stab-plugin/Cargo.toml
 sed -i "s/^display_version = .*/display_version = \"$V\"/" Cargo.toml
 echo "Hiển thị: $V | Cargo: $CV. Nhớ ghi vào CHANGELOG.md"

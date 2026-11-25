@@ -294,6 +294,7 @@ struct App {
     zoom_c: f32,
     device: (String, String),
     hevc_ok: bool,
+    br_txt: String,
     st_last_bytes: u64,
     st_last_t: Instant,
     st_kbps: u64,
@@ -329,6 +330,7 @@ impl App {
             droid,
             dir,
             cfg,
+            br_txt: s.stbr.to_string(),
             s,
             cam: None,
             front: false,
@@ -1315,6 +1317,7 @@ impl eframe::App for App {
                             if chip(ui, &format!("{}k", self.s.stbr), false).clicked() {
                                 let list = [1000, 2000, 3000, 4000, 6000, 8000];
                                 self.s.stbr = list.iter().cloned().find(|v| *v > self.s.stbr).unwrap_or(list[0]);
+                                self.br_txt = self.s.stbr.to_string();
                                 s_changed = true;
                                 reopen = true;
                             }
@@ -1585,7 +1588,28 @@ impl eframe::App for App {
             if !self.hevc_ok {
                 ui.small("Máy này không có bộ mã hóa H.265 → sẽ dùng H.264.");
             }
-            reopen |= ui.add(egui::Slider::new(&mut self.s.stbr, 500..=12000).text("Bitrate video (kbps)")).changed();
+            if ui.add(egui::Slider::new(&mut self.s.stbr, 500..=12000).text("Bitrate video (kbps)")).changed() {
+                self.br_txt = self.s.stbr.to_string();
+                reopen = true;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Hoặc nhập tay (100–100000 kbps):");
+                let r = ui.add(egui::TextEdit::singleline(&mut self.br_txt).desired_width(80.0));
+                if r.gained_focus() {
+                    self.droid.show_soft_input(true);
+                }
+                if r.lost_focus() {
+                    if let Ok(v) = self.br_txt.trim().parse::<i32>() {
+                        let v = v.clamp(100, 100_000);
+                        if v != self.s.stbr {
+                            self.s.stbr = v;
+                            s_changed = true;
+                            reopen = true;
+                        }
+                    }
+                    self.br_txt = self.s.stbr.to_string();
+                }
+            });
             reopen |= combo(ui, "Độ phân giải stream", &mut self.s.stres, &["480p", "720p", "1080p"]);
             let mut fi = match self.s.stfps {
                 24 => 0,
@@ -1605,6 +1629,11 @@ impl eframe::App for App {
             s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_str, 0..=100).text("Mức ổn định")).changed();
             s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_crop, 80..=100).text("Tỉ lệ khung giữ lại (%)")).changed();
             s_changed |= ui.add(egui::Slider::new(&mut self.s.ss_smooth, 3..=60).text("Độ làm mượt (khung)")).changed();
+            if ui.button("Mở app plugin CSar Stab").clicked() {
+                if let Err(e) = media::open_plugin(&self.droid) {
+                    self.set_status(&format!("Không mở được plugin (đã cài CSar Stab chưa?): {}", e));
+                }
+            }
             ui.label("Cổng plugin (localhost)");
             let r = ui.add(egui::TextEdit::singleline(&mut self.s.ss_port).hint_text("7788"));
             if r.gained_focus() {

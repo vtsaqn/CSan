@@ -1,6 +1,12 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 2511.26 — 25/11/2026
+- Bitrate livestream nhập tay tự do (100–100000 kbps) trong Cài đặt → Livestream, ngoài thanh trượt và nút nhanh.
+- Thêm plugin ổn định video **CSar Stab** (app riêng, cùng repo, workspace `stab-plugin/`, mã gói `zanq.fun.csarstab`): mở cổng TCP localhost theo giao thức CSAR-STB v1, nhận khung NV12 từ CSar, trả khung đã ổn định. Bộ ổn định thuần Rust: ước lượng dịch chuyển bằng khối SAD theo 3 mức độ phân giải, lọc thông cao có rò (cho phép lia máy chủ ý), dịch + phóng nhẹ bằng nội suy song tuyến; tuỳ chỉnh mức ổn định, tỉ lệ khung giữ lại, độ làm mượt.
+- Bản OpenCV của plugin (feature `opencv`, backend LK optical flow + estimateAffinePartial2D + warpAffine) có job riêng trong workflow (tuỳ chọn, lỗi không ảnh hưởng bản chính). Artifact: `CSarStab-OpenCV-<phiên bản>`.
+- Workflow build thêm plugin thuần Rust cùng artifact `CSar-<phiên bản>` (CSar-….apk và CSarStab-….apk). Nút "Mở app plugin CSar Stab" trong Cài đặt.
+
 ## 2411.26 — 24/11/2026
 - Thêm chế độ STREAM (livestream) qua RTMP và RTMPS: tự viết giao thức RTMP (bắt tay, AMF0, chia chunk, FLV), RTMPS dùng SSLSocket của Android qua JNI (có SNI và kiểm tra tên máy chủ). Video H.264 (FLV chuẩn) hoặc H.265 (Enhanced RTMP, FourCC hvc1); âm thanh AAC từ mic chính.
 - Cài đặt riêng cho stream: URL, khoá luồng, codec (H.265 chỉ bật nếu máy có bộ mã hóa), bitrate video, độ phân giải 480p/720p/1080p, FPS 24/30/60, khung chủ đạo, hướng (dọc/ngang), bitrate âm thanh. Hàng tuỳ chọn trong chế độ STREAM có nút nhanh: Ổn định, Codec, Bitrate, Độ phân giải, Hướng.

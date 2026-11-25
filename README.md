@@ -36,6 +36,12 @@ Giao thức: `rtmp://host[:1935]/app` và `rtmps://host[:443]/app`; khoá luồn
 H.265 dùng Enhanced RTMP (FourCC `hvc1`) nên máy chủ phải hỗ trợ (YouTube, Twitch Enhanced Broadcasting…); nginx-rtmp bản gốc thì dùng H.264.
 Cần để màn hình sáng và app ở nền trước khi phát. WHIP/WebRTC chưa có.
 
+## Plugin CSar Stab (cùng repo)
+Thư mục `stab-plugin/` là một crate riêng trong workspace, build ra APK `CSarStab-<phiên bản>.apk` (mã gói `zanq.fun.csarstab`).
+Cài cả hai app, mở **CSar Stab** → bấm **Bắt đầu** (cổng mặc định 7788), rồi trong CSar chọn STREAM → Ổn định: Bật.
+Android có thể đóng app nền: để CSar Stab ở cửa sổ nổi/chia đôi màn hình hoặc tắt tối ưu pin cho nó.
+Build thủ công: `cargo apk build --release -p csar-stab` (thuần Rust) hoặc thêm `--features opencv` (cần OpenCV Android SDK, xem job `plugin-opencv` trong workflow).
+
 ## Plugin ổn định video — giao thức CSAR-STB v1
 Plugin là app riêng, mở cổng TCP `127.0.0.1:<cổng>` (mặc định 7788) khi đang chạy. Mọi số nhiều byte theo big-endian.
 1. App → plugin (khi bắt đầu phát): `"CSARSTB1"` + `w`(u16) + `h`(u16) + `fps`(u8) + `mức ổn định`(u8, 0–100) + `tỉ lệ khung giữ lại`(u8, %) + `cửa sổ làm mượt`(u16, số khung).
