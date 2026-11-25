@@ -38,7 +38,7 @@ impl CvStab {
         let p = core::Mat::new_rows_cols_with_data(sh, sw, prev)?;
         let c = core::Mat::new_rows_cols_with_data(sh, sw, cur)?;
         let mut pts0 = core::Vector::<core::Point2f>::new();
-        imgproc::good_features_to_track(&*p, &mut pts0, 200, 0.01, 12.0, &core::no_array(), 3, false, 0.04)?;
+        imgproc::good_features_to_track(&p, &mut pts0, 200, 0.01, 12.0, &core::no_array(), 3, false, 0.04)?;
         if pts0.len() < 12 {
             return Ok(None);
         }
@@ -46,7 +46,7 @@ impl CvStab {
         let mut status = core::Vector::<u8>::new();
         let mut err = core::Vector::<f32>::new();
         let crit = core::TermCriteria::new(1 | 2, 20, 0.03)?;
-        video::calc_optical_flow_pyr_lk(&*p, &*c, &pts0, &mut pts1, &mut status, &mut err, core::Size::new(21, 21), 3, crit, 0, 1e-4)?;
+        video::calc_optical_flow_pyr_lk(&p, &c, &pts0, &mut pts1, &mut status, &mut err, core::Size::new(21, 21), 3, crit, 0, 1e-4)?;
         let mut g0 = core::Vector::<core::Point2f>::new();
         let mut g1 = core::Vector::<core::Point2f>::new();
         for i in 0..pts0.len() {
