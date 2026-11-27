@@ -15,7 +15,7 @@ mod stream;
 mod tik;
 mod video;
 
-use android_activity::{AndroidApp, WindowManagerFlags};
+use android_activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use cfg::Cfg;
 use eframe::egui;
@@ -328,8 +328,6 @@ struct App {
     trim: Option<Trim>,
     /// đổi camera lúc đang quay VIDEO: lưu clip rồi tự quay tiếp bằng camera kia ngay khi mở xong
     resume_rec: bool,
-    started: Instant,
-    awake_set: bool,
 }
 
 impl App {
@@ -395,8 +393,6 @@ impl App {
             tik_limit: None,
             trim: None,
             resume_rec: false,
-            started: Instant::now(),
-            awake_set: false,
         }
     }
 
@@ -683,11 +679,6 @@ impl App {
     }
 
     fn tick(&mut self) {
-        // giữ màn hình luôn sáng: đặt một lần, sau khi app đã chạy ổn định vài giây (không đặt lúc đang khởi tạo cửa sổ)
-        if !self.awake_set && self.cam.is_some() && self.started.elapsed() > Duration::from_secs(3) {
-            self.awake_set = true;
-            self.droid.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
-        }
         // mở camera khi đủ quyền
         if self.cam.is_none() && self.open_err.is_none() && self.last_check.elapsed() > Duration::from_millis(500) {
             self.last_check = Instant::now();
