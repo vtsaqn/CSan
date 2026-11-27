@@ -357,7 +357,7 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
     let mirror = sh.mirror;
     let (cxi, cyi) = (cx as isize, cy as isize);
     let mut out: Vec<Color32> = vec![Color32::BLACK; dw * dh];
-    let nth = if dw * dh > 300_000 { 3usize } else { 1 };
+    let nth = 1usize;
     let rows_per = (dh + nth - 1) / nth;
     let (mut sum, mut dark, mut bright) = (0u64, 0u32, 0u32);
     std::thread::scope(|sc| {
