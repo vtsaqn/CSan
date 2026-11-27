@@ -2,6 +2,7 @@
 use crate::export::Jvm;
 use crate::rtmp::{Meta, Rtmp};
 use crate::video::*;
+use std::ffi::c_int;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,9 +39,26 @@ pub struct StreamParams {
     pub stab: Option<StabParams>,
 }
 
+#[link(name = "mediandk")]
+extern "C" {
+    fn AMediaCodec_setParameters(c: *mut AMediaCodec, params: *const AMediaFormat) -> c_int;
+}
+
+/// Đổi bitrate mục tiêu của bộ mã hóa đang chạy (bps).
+fn set_video_bitrate(codec: *mut AMediaCodec, bps: i32) {
+    unsafe {
+        let f = AMediaFormat_new();
+        AMediaFormat_setInt32(f, cs("video-bitrate").as_ptr(), bps);
+        AMediaCodec_setParameters(codec, f);
+        AMediaFormat_delete(f);
+    }
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub bytes: AtomicU64,
+    /// tổng byte video đã gửi (để hiện kbps video và giữ dưới mức bitrate đã đặt)
+    pub vbytes: AtomicU64,
     pub live: AtomicBool,
     pub stab_on: AtomicBool,
     pub state: Mutex<String>,
@@ -79,18 +97,22 @@ impl BufEncoder {
                 return Err(format!("Máy không có bộ mã hóa {}", if hevc { "H.265" } else { "H.264" }));
             }
             let mut ok = false;
-            for cbr in [true, false] {
+            let bps = bitrate_kbps.max(100) * 1000;
+            // bitrate-mode: 2 = CBR (cố định), 3 = CBR_FD (cố định, được phép bỏ khung), 1 = VBR (chỉ dùng khi máy không có CBR)
+            // max-bitrate: giới hạn trên; máy không hiểu khoá này thì thử lại không có nó
+            for (mode, with_max) in [(2, true), (3, true), (2, false), (3, false), (1, false)] {
                 let f = AMediaFormat_new();
                 AMediaFormat_setString(f, cs("mime").as_ptr(), cs(mime).as_ptr());
                 AMediaFormat_setInt32(f, cs("width").as_ptr(), w);
                 AMediaFormat_setInt32(f, cs("height").as_ptr(), h);
                 AMediaFormat_setInt32(f, cs("color-format").as_ptr(), 21);
-                AMediaFormat_setInt32(f, cs("bitrate").as_ptr(), bitrate_kbps.max(300) * 1000);
+                AMediaFormat_setInt32(f, cs("bitrate").as_ptr(), bps);
                 AMediaFormat_setInt32(f, cs("frame-rate").as_ptr(), fps);
                 AMediaFormat_setInt32(f, cs("i-frame-interval").as_ptr(), iframe_s.max(1));
                 AMediaFormat_setInt32(f, cs("max-bframes").as_ptr(), 0);
-                if cbr {
-                    AMediaFormat_setInt32(f, cs("bitrate-mode").as_ptr(), 2);
+                AMediaFormat_setInt32(f, cs("bitrate-mode").as_ptr(), mode);
+                if with_max {
+                    AMediaFormat_setInt32(f, cs("max-bitrate").as_ptr(), bps);
                 }
                 let st = AMediaCodec_configure(codec, f, std::ptr::null_mut(), std::ptr::null_mut(), 1);
                 AMediaFormat_delete(f);
@@ -366,6 +388,12 @@ fn run(enc: BufEncoder, rx: Receiver<StreamFrame>, active: Arc<AtomicBool>, p: S
     let mut vcfg = false;
     let mut acfg = false;
     let mut err: Option<String> = None;
+    // bitrate video đã đặt là mức TỐI ĐA: đo mỗi giây, vượt thì hạ mục tiêu của bộ mã hóa, dưới thì nâng lại (không quá mức đã đặt)
+    let cap_kbps = p.vbr_kbps.max(100) as f64;
+    let mut cur_kbps = cap_kbps;
+    let mut win_t = Instant::now();
+    let mut win_bytes: u64 = 0;
+    let mut vtotal: u64 = 0;
 
     'main: while !stop.load(Ordering::SeqCst) {
         match rx.recv_timeout(Duration::from_millis(10)) {
@@ -442,10 +470,30 @@ fn run(enc: BufEncoder, rx: Receiver<StreamFrame>, active: Arc<AtomicBool>, p: S
                 pl.extend_from_slice(&(s.len() as u32).to_be_bytes());
                 pl.extend_from_slice(s);
             }
+            let plen = pl.len() as u64;
             if let Err(e) = rtmp.video((info.pts.max(0) / 1000) as u32, &pl) {
                 err = Some(e);
                 break 'main;
             }
+            win_bytes += plen;
+            vtotal += plen;
+            stats.vbytes.store(vtotal, Ordering::Relaxed);
+        }
+        let we = win_t.elapsed();
+        if we >= Duration::from_millis(1000) {
+            let kbps = win_bytes as f64 * 8.0 / 1000.0 / we.as_secs_f64();
+            let mut want = cur_kbps;
+            if kbps > cap_kbps * 0.97 {
+                want = (cur_kbps * cap_kbps / kbps * 0.92).max(cap_kbps * 0.35);
+            } else if kbps < cap_kbps * 0.85 && cur_kbps < cap_kbps {
+                want = (cur_kbps * 1.1).min(cap_kbps);
+            }
+            if (want - cur_kbps).abs() > cap_kbps * 0.02 {
+                cur_kbps = want;
+                set_video_bitrate(enc.codec, (cur_kbps * 1000.0) as i32);
+            }
+            win_t = Instant::now();
+            win_bytes = 0;
         }
         // âm thanh
         if let Some(a) = aud.as_mut() {

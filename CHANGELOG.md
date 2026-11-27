@@ -1,6 +1,14 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 2711.26 — 27/11/2026
+- Livestream: bỏ thanh trượt bitrate. Chỉ còn ô nhập tay (100–100000 kbps) trong Cài đặt → Livestream; nút bitrate ở hàng tuỳ chọn giờ chỉ mở Cài đặt. Giá trị đặt là **mức trần**: bộ mã hóa chạy CBR cố định kèm `max-bitrate`, và luồng phát đo mỗi giây, nếu vượt thì tự hạ mục tiêu của bộ mã hóa, dưới mức thì nâng lại (không quá mức đã đặt). Số kbps hiện trên hình là kbps video.
+- Livestream: thêm chọn tỉ lệ khung hình 16:9, 9:16, 4:3, 3:4, 1:1, 3:2, 2:3 (Cài đặt → Livestream và nút ở hàng tuỳ chọn). Khung camera được cắt giữa đúng tỉ lệ rồi xoay/co về kích thước ra; xem trước cũng cắt đúng khung đang phát. Thay cho mục "Hướng stream" (cũ: Dọc = 9:16, Ngang = 16:9; thêm ô "Xoay 180°" thay cho "Ngang ngược"). Cài đặt cũ tự được chuyển.
+- Giữ màn hình luôn sáng khi mở ứng dụng.
+- Giảm giật khi camera đang tự lấy nét / phơi sáng / cân bằng trắng: chuyển khung xem trước YUV→RGB chạy song song nhiều luồng, bỏ kiểm tra chỉ số từng điểm ảnh, bỏ các bước chép bộ đệm (khung đi thẳng sang texture), chuyển khung cho stream bằng bản đồ lấy mẫu tính sẵn; ImageReader xem trước thêm bộ đệm. Trước đây callback chậm giữ ImageReader làm camera giảm tốc nên vòng tự động bị trễ.
+- Nhớ chế độ (ẢNH/LIVE/VIDEO/TIKTOK/STREAM) và camera trước/sau của lần dùng trước; mở lại đúng như lúc thoát.
+- Đổi camera trước/sau không ngắt: khi đang livestream, bộ mã hóa và kết nối RTMP giữ nguyên, chỉ đóng/mở lại camera (hình đứng khoảng 0,5–1 giây, âm thanh vẫn chạy); không mở được camera kia thì quay lại camera cũ, vẫn giữ luồng. Khi đang quay VIDEO: lưu clip hiện tại rồi tự quay tiếp bằng camera còn lại (ra 2 tệp, vì một tệp mp4 không đổi được hướng xoay giữa chừng). Đang phát/quay thì khoá nút đổi chế độ và không mở lại camera khi chỉnh Cài đặt (áp dụng ở lần sau). TikTok đang quay vẫn không đổi được camera.
+
 ## 2511.26 — 25/11/2026
 - Bitrate livestream nhập tay tự do (100–100000 kbps) trong Cài đặt → Livestream, ngoài thanh trượt và nút nhanh.
 - Thêm plugin ổn định video **CSar Stab** (app riêng, cùng repo, workspace `stab-plugin/`, mã gói `zanq.fun.csarstab`): mở cổng TCP localhost theo giao thức CSAR-STB v1, nhận khung NV12 từ CSar, trả khung đã ổn định. Bộ ổn định thuần Rust: ước lượng dịch chuyển bằng khối SAD theo 3 mức độ phân giải, lọc thông cao có rò (cho phép lia máy chủ ý), dịch + phóng nhẹ bằng nội suy song tuyến; tuỳ chỉnh mức ổn định, tỉ lệ khung giữ lại, độ làm mượt.

@@ -1,6 +1,6 @@
 [package]
 name = "csar-stab"
-version = "26.11.25"
+version = "26.11.27"
 edition = "2021"
 
 [lib]

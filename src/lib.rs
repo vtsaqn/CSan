@@ -15,7 +15,7 @@ mod stream;
 mod tik;
 mod video;
 
-use android_activity::AndroidApp;
+use android_activity::{AndroidApp, WindowManagerFlags};
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use cfg::Cfg;
 use eframe::egui;
@@ -100,7 +100,10 @@ struct Set {
     stres: i32,
     stki: i32,
     stabr: i32,
-    stori: i32,
+    strat: i32,
+    stflip: bool,
+    mode: i32,
+    front: bool,
     ss_on: bool,
     ss_str: i32,
     ss_crop: i32,
@@ -149,7 +152,11 @@ impl Set {
             stres: c.int("stres", 1) as i32,
             stki: c.int("stki", 1) as i32,
             stabr: c.int("stabr", 128) as i32,
-            stori: c.int("stori", 0) as i32,
+            // tỉ lệ stream: bản cũ lưu "stori" (0 dọc, 1 ngang, 2 ngang ngược) → đổi sang tỉ lệ + xoay 180°
+            strat: if c.map.contains_key("strat") { (c.int("strat", 1) as i32).clamp(0, 6) } else if matches!(c.int("stori", 0), 1 | 2) { 0 } else { 1 },
+            stflip: if c.map.contains_key("stflip") { c.boolean("stflip", false) } else { c.int("stori", 0) == 2 },
+            mode: (c.int("mode", 0) as i32).clamp(0, 4),
+            front: c.boolean("front", false),
             ss_on: c.boolean("ss_on", false),
             ss_str: c.int("ss_str", 50) as i32,
             ss_crop: c.int("ss_crop", 95) as i32,
@@ -197,7 +204,10 @@ impl Set {
         c.set("stres", self.stres.to_string());
         c.set("stki", self.stki.to_string());
         c.set("stabr", self.stabr.to_string());
-        c.set("stori", self.stori.to_string());
+        c.set("strat", self.strat.to_string());
+        c.set("stflip", b(self.stflip));
+        c.set("mode", self.mode.to_string());
+        c.set("front", b(self.front));
         c.set("ss_on", b(self.ss_on));
         c.set("ss_str", self.ss_str.to_string());
         c.set("ss_crop", self.ss_crop.to_string());
@@ -206,6 +216,8 @@ impl Set {
     }
 }
 
+const SRATIOS: [(i32, i32); 7] = [(16, 9), (9, 16), (4, 3), (3, 4), (1, 1), (3, 2), (2, 3)];
+const SRATIO_NAMES: [&str; 7] = ["16:9", "9:16", "4:3", "3:4", "1:1", "3:2", "2:3"];
 const TIMERS: [u64; 3] = [0, 3, 10];
 const TIKD: [i64; 3] = [15, 30, 60];
 const SPD: [f32; 5] = [3.0, 2.0, 1.0, 0.5, 0.25];
@@ -314,6 +326,8 @@ struct App {
     tik_job: Option<TikJob>,
     tik_limit: Option<Duration>,
     trim: Option<Trim>,
+    /// đổi camera lúc đang quay VIDEO: lưu clip rồi tự quay tiếp bằng camera kia ngay khi mở xong
+    resume_rec: bool,
 }
 
 impl App {
@@ -325,6 +339,10 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("."));
         let cfg = Cfg::load(&dir);
         let s = Set::load(&cfg);
+        // giữ màn hình luôn sáng khi đang mở ứng dụng
+        droid.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+        let mode0 = s.mode.clamp(0, 4) as u8;
+        let front0 = s.front;
         let device = media::device_names(&droid);
         App {
             droid,
@@ -333,8 +351,8 @@ impl App {
             br_txt: s.stbr.to_string(),
             s,
             cam: None,
-            front: false,
-            mode: 0,
+            front: front0,
+            mode: mode0,
             open_err: None,
             perm_asked: false,
             last_check: Instant::now() - Duration::from_secs(10),
@@ -376,6 +394,7 @@ impl App {
             tik_job: None,
             tik_limit: None,
             trim: None,
+            resume_rec: false,
         }
     }
 
@@ -424,7 +443,8 @@ impl App {
             stream: if self.mode == 4 {
                 Some(cam::StreamOpts {
                     res: self.s.stres,
-                    orient: self.s.stori,
+                    ratio: SRATIOS[self.s.strat.clamp(0, 6) as usize],
+                    flip: self.s.stflip,
                     fps: self.s.stfps,
                     vbr_kbps: self.s.stbr,
                     hevc: self.s.stc == 1 && self.hevc_ok,
@@ -669,12 +689,17 @@ impl App {
                     Ok(c) => {
                         self.cam = Some(c);
                         self.sync_ctl();
+                        if self.resume_rec {
+                            self.resume_rec = false;
+                            self.toggle_record();
+                        }
                     }
                     Err(e) => {
                         if !self.compat {
                             self.compat = true;
                             self.set_status(&format!("Camera lỗi ({}) → thử chế độ tương thích", e));
                         } else {
+                            self.resume_rec = false;
                             self.open_err = Some(e);
                         }
                     }
@@ -907,7 +932,7 @@ impl App {
         };
         let el = self.st_last_t.elapsed();
         if el >= Duration::from_secs(1) {
-            let b = st.bytes.load(Ordering::Relaxed);
+            let b = st.vbytes.load(Ordering::Relaxed);
             self.st_kbps = b.saturating_sub(self.st_last_bytes) * 8 / 1000 / el.as_secs().max(1);
             self.st_last_bytes = b;
             self.st_last_t = Instant::now();
@@ -1042,18 +1067,93 @@ impl App {
         if let Some(c) = &self.cam {
             let seq = c.sh.seq.load(Ordering::SeqCst);
             if seq != self.last_seq {
-                if let Ok(f) = c.sh.frame.lock() {
-                    if f.w > 0 && f.h > 0 && f.rgba.len() == f.w * f.h * 4 {
-                        let img = egui::ColorImage::from_rgba_unmultiplied([f.w, f.h], &f.rgba);
-                        match &mut self.tex {
-                            Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                            None => self.tex = Some(ctx.load_texture("cam", img, egui::TextureOptions::LINEAR)),
-                        }
-                        self.last_seq = seq;
+                // lấy bộ đệm điểm ảnh ra khỏi khoá thật nhanh (không chép) để luồng camera không bị chặn
+                let mut taken: Option<egui::ColorImage> = None;
+                if let Ok(mut f) = c.sh.frame.lock() {
+                    if f.w > 0 && f.h > 0 && f.pixels.len() == f.w * f.h {
+                        let size = [f.w, f.h];
+                        taken = Some(egui::ColorImage { size, pixels: std::mem::take(&mut f.pixels) });
                     }
+                }
+                if let Some(img) = taken {
+                    match &mut self.tex {
+                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                        None => self.tex = Some(ctx.load_texture("cam", img, egui::TextureOptions::LINEAR)),
+                    }
+                    self.last_seq = seq;
                 }
             }
         }
+    }
+
+    /// Đổi camera trước/sau.
+    /// - Đang livestream: giữ nguyên bộ mã hóa + kết nối RTMP, chỉ đóng/mở lại camera (hình đứng ~0,5–1 giây, không ngắt luồng).
+    /// - Đang quay VIDEO: lưu clip hiện tại rồi tự quay tiếp bằng camera còn lại (ra 2 tệp).
+    fn flip_camera(&mut self) {
+        let streaming = self.cam.as_ref().map(|c| c.is_streaming()).unwrap_or(false);
+        let rec_video = self.mode == 2 && self.cam.as_ref().map(|c| c.rec.is_some()).unwrap_or(false);
+        self.front = !self.front;
+        self.s.front = self.front;
+        self.save_cfg();
+        self.compat = false;
+        if streaming {
+            let mut keep = self.cam.as_mut().and_then(|c| c.take_stream_keep());
+            self.cam = None;
+            self.last_seq = 0;
+            self.zoom_t = 1.0;
+            self.zoom_c = 1.0;
+            let mut res: Result<cam::Camera, String> = Err("chưa mở".to_string());
+            for _ in 0..4 {
+                res = cam::Camera::open_keep(self.open_opts(), &mut keep);
+                if res.is_ok() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            match res {
+                Ok(c) => {
+                    self.cam = Some(c);
+                    self.sync_ctl();
+                    self.set_status("Đã đổi camera, livestream vẫn chạy");
+                }
+                Err(e) => {
+                    // không mở được camera kia → quay lại camera cũ, vẫn giữ luồng
+                    self.front = !self.front;
+                    self.s.front = self.front;
+                    self.save_cfg();
+                    let mut back: Result<cam::Camera, String> = Err("chưa mở".to_string());
+                    for _ in 0..4 {
+                        back = cam::Camera::open_keep(self.open_opts(), &mut keep);
+                        if back.is_ok() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    match back {
+                        Ok(c) => {
+                            self.cam = Some(c);
+                            self.sync_ctl();
+                            self.set_status(&format!("Không đổi được camera ({}) – giữ camera cũ", e));
+                        }
+                        Err(e2) => {
+                            if let Some(k) = keep.take() {
+                                k.streamer.stop();
+                            }
+                            self.open_err = Some(e2.clone());
+                            self.set_status(&format!("Livestream dừng: {}", e2));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if rec_video {
+            self.set_status("Đã lưu clip, tiếp tục quay bằng camera kia…");
+            self.toggle_record();
+            self.resume_rec = true;
+            return;
+        }
+        self.reopen();
     }
 }
 
@@ -1122,6 +1222,9 @@ impl eframe::App for App {
         }
 
         let recording = self.cam.as_ref().map(|c| c.rec.is_some()).unwrap_or(false);
+        let streaming = self.cam.as_ref().map(|c| c.is_streaming()).unwrap_or(false);
+        // đang quay hoặc phát: không cho đổi chế độ/cài đặt làm mở lại camera (sẽ ngắt)
+        let busy = recording || streaming;
         let mut s_changed = false;
         let mut reopen = false;
 
@@ -1195,10 +1298,9 @@ impl eframe::App for App {
                     });
                     cols[2].vertical_centered(|ui| {
                         ui.add_space(24.0);
-                        if !recording && ui.button("🔄 Đổi").clicked() {
-                            self.front = !self.front;
-                            self.compat = false;
-                            self.reopen();
+                        let can_flip = !recording || self.mode == 2;
+                        if can_flip && ui.button("🔄 Đổi").clicked() {
+                            self.flip_camera();
                         }
                     });
                 });
@@ -1206,10 +1308,12 @@ impl eframe::App for App {
             // chế độ Ảnh / Live / Video / TikTok
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                if !recording {
+                if !busy {
                     for (m, name) in [(0u8, "ẢNH"), (1, "LIVE"), (2, "VIDEO"), (3, "TIKTOK"), (4, "STREAM")] {
                         if chip(ui, name, self.mode == m).clicked() && self.mode != m {
                             self.mode = m;
+                            self.s.mode = m as i32;
+                            s_changed = true;
                             self.compat = false;
                             self.reopen();
                         }
@@ -1233,7 +1337,7 @@ impl eframe::App for App {
                         }
                     }
                     ui.label(egui::RichText::new(format!("{:.1}x", cur)).color(egui::Color32::WHITE));
-                    if overlay && !recording {
+                    if overlay && !busy {
                         if chip(ui, if self.more { "▾ Ẩn" } else { "⋯ Tùy chọn" }, self.more).clicked() {
                             self.more = !self.more;
                         }
@@ -1244,7 +1348,7 @@ impl eframe::App for App {
                 self.zoom_t = z;
             }
             // hàng tuỳ chọn theo chế độ (luôn nằm ngay trên hàng zoom)
-            if !recording && (!overlay || self.more) {
+            if !busy && (!overlay || self.more) {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -1314,20 +1418,17 @@ impl eframe::App for App {
                                     self.set_status("Máy này không có bộ mã hóa H.265");
                                 }
                             }
+                            // bitrate chỉ nhập tay trong Cài đặt → bấm nút này để mở Cài đặt
                             if chip(ui, &format!("{}k", self.s.stbr), false).clicked() {
-                                let list = [1000, 2000, 3000, 4000, 6000, 8000];
-                                self.s.stbr = list.iter().cloned().find(|v| *v > self.s.stbr).unwrap_or(list[0]);
-                                self.br_txt = self.s.stbr.to_string();
-                                s_changed = true;
-                                reopen = true;
+                                self.settings_open = true;
                             }
                             if chip(ui, ["480p", "720p", "1080p"][self.s.stres.clamp(0, 2) as usize], false).clicked() {
                                 self.s.stres = (self.s.stres + 1) % 3;
                                 s_changed = true;
                                 reopen = true;
                             }
-                            if chip(ui, ["Dọc", "Ngang", "Ngang ↻"][self.s.stori.clamp(0, 2) as usize], false).clicked() {
-                                self.s.stori = (self.s.stori + 1) % 3;
+                            if chip(ui, SRATIO_NAMES[self.s.strat.clamp(0, 6) as usize], false).clicked() {
+                                self.s.strat = (self.s.strat + 1) % 7;
                                 s_changed = true;
                                 reopen = true;
                             }
@@ -1588,12 +1689,8 @@ impl eframe::App for App {
             if !self.hevc_ok {
                 ui.small("Máy này không có bộ mã hóa H.265 → sẽ dùng H.264.");
             }
-            if ui.add(egui::Slider::new(&mut self.s.stbr, 500..=12000).text("Bitrate video (kbps)")).changed() {
-                self.br_txt = self.s.stbr.to_string();
-                reopen = true;
-            }
             ui.horizontal(|ui| {
-                ui.label("Hoặc nhập tay (100–100000 kbps):");
+                ui.label("Bitrate video tối đa (kbps, nhập tay 100–100000):");
                 let r = ui.add(egui::TextEdit::singleline(&mut self.br_txt).desired_width(80.0));
                 if r.gained_focus() {
                     self.droid.show_soft_input(true);
@@ -1610,6 +1707,7 @@ impl eframe::App for App {
                     self.br_txt = self.s.stbr.to_string();
                 }
             });
+            ui.small("Bitrate cố định (CBR) và là mức trần: bộ mã hóa được giữ không vượt mức này. Áp dụng từ lần phát sau.");
             reopen |= combo(ui, "Độ phân giải stream", &mut self.s.stres, &["480p", "720p", "1080p"]);
             let mut fi = match self.s.stfps {
                 24 => 0,
@@ -1621,7 +1719,8 @@ impl eframe::App for App {
                 reopen = true;
             }
             reopen |= combo(ui, "Khung chủ đạo", &mut self.s.stki, &["1 giây", "2 giây", "4 giây"]);
-            reopen |= combo(ui, "Hướng stream", &mut self.s.stori, &["Dọc (9:16)", "Ngang (16:9)", "Ngang ngược"]);
+            reopen |= combo(ui, "Tỉ lệ khung stream", &mut self.s.strat, &SRATIO_NAMES);
+            reopen |= ui.checkbox(&mut self.s.stflip, "Xoay 180° (cầm máy ngược)").changed();
             s_changed |= ui.add(egui::Slider::new(&mut self.s.stabr, 32..=256).text("Bitrate âm thanh (kbps)")).changed();
             ui.separator();
             ui.strong("Ổn định video cho livestream (plugin OpenCV)");
@@ -1647,7 +1746,7 @@ impl eframe::App for App {
 
         if s_changed || reopen {
             self.save_cfg();
-            if reopen && !recording {
+            if reopen && !busy {
                 self.reopen();
             } else {
                 self.sync_ctl();

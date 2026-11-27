@@ -7,8 +7,10 @@ use crate::video;
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use eframe::egui::Color32;
 
 // ---------- kiểu mờ (opaque) ----------
 pub enum ACameraManager {}
@@ -159,7 +161,8 @@ const FMT_PRIVATE: i32 = 0x22;
 pub struct Frame {
     pub w: usize,
     pub h: usize,
-    pub rgba: Vec<u8>,
+    /// Điểm ảnh RGBA đã sẵn dạng Color32 (alpha = 255) để nạp thẳng vào texture, không phải chép lại.
+    pub pixels: Vec<Color32>,
 }
 
 #[derive(Clone, Default)]
@@ -229,6 +232,11 @@ pub struct Shared {
     mirror: bool,
     pw: i32,
     ph: i32,
+    /// vùng cắt của khung xem trước (điểm ảnh nguồn, số chẵn): dùng để xem trước đúng khung hình đang phát stream
+    pcx: i32,
+    pcy: i32,
+    pcw: i32,
+    pch: i32,
 }
 
 unsafe extern "C" fn on_disc(ctx: *mut c_void, _d: *mut ACameraDevice) {
@@ -267,7 +275,53 @@ unsafe extern "C" fn on_preview(ctx: *mut c_void, reader: *mut AImageReader) {
     AImage_delete(img);
 }
 
-/// YUV_420_888 -> RGBA (giữ nguyên độ phân giải, xoay theo màn hình) + thống kê cảnh.
+/// Bản đồ lấy mẫu một mặt phẳng ảnh: chỉ số nguồn = i0 + kx*rx + ky*ry, với rx/ry lấy từ xm/ym.
+/// Gộp 3 việc vào một phép tính: cắt (ox,oy,cw,ch), xoay (rot) và co giãn gần nhất (cw,ch → ow,oh).
+struct PMap {
+    i0: isize,
+    kx: isize,
+    ky: isize,
+    xm: Vec<u32>,
+    ym: Vec<u32>,
+    lo: isize,
+    hi: isize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_map(rot: i32, cw: usize, ch: usize, ow: usize, oh: usize, ox: usize, oy: usize, rs: usize, ps: usize) -> PMap {
+    let (rw, rh) = if rot == 90 || rot == 270 { (ch, cw) } else { (cw, ch) };
+    let xm: Vec<u32> = (0..ow).map(|d| (d * rw / ow.max(1)).min(rw.saturating_sub(1)) as u32).collect();
+    let ym: Vec<u32> = (0..oh).map(|d| (d * rh / oh.max(1)).min(rh.saturating_sub(1)) as u32).collect();
+    let (cwi, chi) = (cw as isize, ch as isize);
+    // (hằng, hệ số theo rx, hệ số theo ry) cho toạ độ px, py trong vùng cắt
+    let ((p0x, pxx, pxy), (p0y, pyx, pyy)): ((isize, isize, isize), (isize, isize, isize)) = match rot {
+        90 => ((0, 0, 1), (chi - 1, -1, 0)),
+        270 => ((cwi - 1, 0, -1), (0, 1, 0)),
+        180 => ((cwi - 1, -1, 0), (chi - 1, 0, -1)),
+        _ => ((0, 1, 0), (0, 0, 1)),
+    };
+    let (rsi, psi) = (rs as isize, ps as isize);
+    let i0 = (oy as isize + p0y) * rsi + (ox as isize + p0x) * psi;
+    let kx = pyx * rsi + pxx * psi;
+    let ky = pyy * rsi + pxy * psi;
+    let (mut lo, mut hi) = (isize::MAX, isize::MIN);
+    for rx in [0isize, rw as isize - 1] {
+        for ry in [0isize, rh as isize - 1] {
+            let v = i0 + kx * rx + ky * ry;
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    PMap { i0, kx, ky, xm, ym, lo, hi }
+}
+
+fn map_ok(m: &PMap, len: usize) -> bool {
+    m.lo >= 0 && (m.hi as usize) < len
+}
+
+/// YUV_420_888 -> Color32 (giữ nguyên độ phân giải, cắt theo khung stream nếu có, xoay theo màn hình) + thống kê cảnh.
+/// Chia thành vài dải hàng chạy song song để không giữ ImageReader lâu (giữ lâu làm camera giảm tốc,
+/// nên lấy nét/phơi sáng/cân bằng trắng tự động bị trễ).
 unsafe fn convert(sh: &Shared, img: *mut AImage) {
     let (y, ys, _) = match plane(img, 0) {
         Some(v) => v,
@@ -281,69 +335,108 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
         Some(v) => v,
         None => return,
     };
-    let sw = sh.pw as usize;
-    let shh = sh.ph as usize;
-    if sw == 0 || shh == 0 {
+    let (cx, cy, cw, ch) = (sh.pcx.max(0) as usize, sh.pcy.max(0) as usize, sh.pcw.max(0) as usize, sh.pch.max(0) as usize);
+    if cw < 2 || ch < 2 {
         return;
     }
-    let (dw, dh) = if sh.rot == 90 || sh.rot == 270 { (shh, sw) } else { (sw, shh) };
-    let mut out = vec![255u8; dw * dh * 4];
-    let (mut sum, mut dark, mut bright) = (0u64, 0u32, 0u32);
-    for dy in 0..dh {
-        for dx in 0..dw {
-            let mx = if sh.mirror { dw - 1 - dx } else { dx };
-            let (sx, sy) = match sh.rot {
-                90 => (dy, shh - 1 - mx),
-                270 => (sw - 1 - dy, mx),
-                180 => (sw - 1 - mx, shh - 1 - dy),
-                _ => (mx, dy),
-            };
-            let px = sx;
-            let py = sy;
-            let yi = py * ys + px;
-            let iu = (py / 2) * us + (px / 2) * ups;
-            let iv = (py / 2) * vs + (px / 2) * vps;
-            if yi >= y.len() || iu >= u.len() || iv >= v.len() {
-                continue;
-            }
-            let yv = y[yi] as i32;
-            sum += yv as u64;
-            if yv < 25 {
-                dark += 1;
-            } else if yv > 235 {
-                bright += 1;
-            }
-            let uv = u[iu] as i32 - 128;
-            let vv = v[iv] as i32 - 128;
-            let r = yv + ((1436 * vv) >> 10);
-            let g = yv - ((352 * uv + 731 * vv) >> 10);
-            let b = yv + ((1814 * uv) >> 10);
-            let o = (dy * dw + dx) * 4;
-            out[o] = r.clamp(0, 255) as u8;
-            out[o + 1] = g.clamp(0, 255) as u8;
-            out[o + 2] = b.clamp(0, 255) as u8;
-        }
+    let rot = sh.rot;
+    let (dw, dh) = if rot == 90 || rot == 270 { (ch, cw) } else { (cw, ch) };
+    let last_y = (cy + ch - 1) * ys + cx + cw - 1;
+    let last_u = ((cy + ch - 1) / 2) * us + ((cx + cw - 1) / 2) * ups;
+    let last_v = ((cy + ch - 1) / 2) * vs + ((cx + cw - 1) / 2) * vps;
+    if last_y >= y.len() || last_u >= u.len() || last_v >= v.len() {
+        return;
     }
+    let (cwi, chi) = (cw as isize, ch as isize);
+    let ((p0x, pxx, pxy), (p0y, pyx, pyy)): ((isize, isize, isize), (isize, isize, isize)) = match rot {
+        90 => ((0, 0, 1), (chi - 1, -1, 0)),
+        270 => ((cwi - 1, 0, -1), (0, 1, 0)),
+        180 => ((cwi - 1, -1, 0), (chi - 1, 0, -1)),
+        _ => ((0, 1, 0), (0, 0, 1)),
+    };
+    let mirror = sh.mirror;
+    let (cxi, cyi) = (cx as isize, cy as isize);
+    let mut out: Vec<Color32> = vec![Color32::BLACK; dw * dh];
+    let nth = if dw * dh > 300_000 { 3usize } else { 1 };
+    let rows_per = (dh + nth - 1) / nth;
+    let (mut sum, mut dark, mut bright) = (0u64, 0u32, 0u32);
+    std::thread::scope(|sc| {
+        let mut hs = Vec::new();
+        for (bi, chunk) in out.chunks_mut(rows_per * dw).enumerate() {
+            let y0 = bi * rows_per;
+            hs.push(sc.spawn(move || {
+                let (mut s1, mut d1, mut b1) = (0u64, 0u32, 0u32);
+                for (ri, row) in chunk.chunks_mut(dw).enumerate() {
+                    let dy = (y0 + ri) as isize;
+                    for (dx, o) in row.iter_mut().enumerate() {
+                        let mx = (if mirror { dw - 1 - dx } else { dx }) as isize;
+                        let px = p0x + pxx * mx + pxy * dy;
+                        let py = p0y + pyx * mx + pyy * dy;
+                        let ax = (cxi + px) as usize;
+                        let ay = (cyi + py) as usize;
+                        let yv = *y.get_unchecked(ay * ys + ax) as i32;
+                        let iu = (ay >> 1) * us + (ax >> 1) * ups;
+                        let iv = (ay >> 1) * vs + (ax >> 1) * vps;
+                        let uv = *u.get_unchecked(iu) as i32 - 128;
+                        let vv = *v.get_unchecked(iv) as i32 - 128;
+                        s1 += yv as u64;
+                        if yv < 25 {
+                            d1 += 1;
+                        } else if yv > 235 {
+                            b1 += 1;
+                        }
+                        let r = yv + ((1436 * vv) >> 10);
+                        let g = yv - ((352 * uv + 731 * vv) >> 10);
+                        let b = yv + ((1814 * uv) >> 10);
+                        *o = Color32::from_rgb(r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8);
+                    }
+                }
+                (s1, d1, b1)
+            }));
+        }
+        for h in hs {
+            if let Ok((a, b, c)) = h.join() {
+                sum += a;
+                dark += b;
+                bright += c;
+            }
+        }
+    });
     let n = (dw * dh) as u64;
     sh.luma.store((sum / n.max(1)) as u32, Ordering::Relaxed);
     sh.dark_pm.store(dark * 1000 / n.max(1) as u32, Ordering::Relaxed);
     sh.bright_pm.store(bright * 1000 / n.max(1) as u32, Ordering::Relaxed);
+    let newf = Frame { w: dw, h: dh, pixels: out };
+    let mut _old: Option<Frame> = None;
     if let Ok(mut f) = sh.frame.lock() {
-        *f = Frame { w: dw, h: dh, rgba: out };
+        _old = Some(std::mem::replace(&mut *f, newf));
         sh.seq.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 /// Dữ liệu dùng chung cho luồng livestream (callback của ImageReader stream).
 pub struct StreamShared {
-    tx: std::sync::mpsc::SyncSender<stream::StreamFrame>,
+    tx: SyncSender<stream::StreamFrame>,
     active: Arc<AtomicBool>,
     rot: i32,
-    sw: usize,
-    sh: usize,
+    /// vùng cắt trong khung camera (điểm ảnh, số chẵn) và kích thước ra (ow x oh)
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
     ow: usize,
     oh: usize,
-    first_ts: AtomicI64,
+    first_ts: Arc<AtomicI64>,
+}
+
+/// Giữ luồng livestream chạy qua lúc đổi camera trước/sau: bộ mã hóa + kết nối RTMP không bị đóng.
+pub struct StreamKeep {
+    tx: SyncSender<stream::StreamFrame>,
+    active: Arc<AtomicBool>,
+    first_ts: Arc<AtomicI64>,
+    pub streamer: stream::Streamer,
+    ow: i32,
+    oh: i32,
 }
 
 unsafe extern "C" fn on_stream(ctx: *mut c_void, reader: *mut AImageReader) {
@@ -358,7 +451,7 @@ unsafe extern "C" fn on_stream(ctx: *mut c_void, reader: *mut AImageReader) {
     AImage_delete(img);
 }
 
-/// YUV_420_888 → NV12 đóng gói chặt, xoay theo hướng stream.
+/// YUV_420_888 → NV12 đóng gói chặt: cắt theo tỉ lệ stream, xoay, co giãn gần nhất về ow x oh.
 unsafe fn convert_stream(ss: &StreamShared, img: *mut AImage) {
     let (y, ys, _) = match plane(img, 0) {
         Some(v) => v,
@@ -372,42 +465,33 @@ unsafe fn convert_stream(ss: &StreamShared, img: *mut AImage) {
         Some(v) => v,
         None => return,
     };
-    let (sw, sh, ow, oh) = (ss.sw, ss.sh, ss.ow, ss.oh);
-    if sw < 2 || sh < 2 || ow < 2 || oh < 2 {
+    let (ow, oh) = (ss.ow, ss.oh);
+    if ow < 2 || oh < 2 || ss.cw < 2 || ss.ch < 2 {
+        return;
+    }
+    let my = make_map(ss.rot, ss.cw, ss.ch, ow, oh, ss.cx, ss.cy, ys, 1);
+    let mu = make_map(ss.rot, ss.cw / 2, ss.ch / 2, ow / 2, oh / 2, ss.cx / 2, ss.cy / 2, us, ups);
+    let mv = make_map(ss.rot, ss.cw / 2, ss.ch / 2, ow / 2, oh / 2, ss.cx / 2, ss.cy / 2, vs, vps);
+    if !map_ok(&my, y.len()) || !map_ok(&mu, u.len()) || !map_ok(&mv, v.len()) {
         return;
     }
     let mut out = vec![0u8; ow * oh * 3 / 2];
+    let (yo, uvo) = out.split_at_mut(ow * oh);
     for dy in 0..oh {
-        for dx in 0..ow {
-            let (sx, sy) = match ss.rot {
-                90 => (dy, sh - 1 - dx),
-                270 => (sw - 1 - dy, dx),
-                180 => (sw - 1 - dx, sh - 1 - dy),
-                _ => (dx, dy),
-            };
-            let yi = sy * ys + sx;
-            if yi < y.len() {
-                out[dy * ow + dx] = y[yi];
-            }
+        let base = my.i0 + my.ky * my.ym[dy] as isize;
+        let row = &mut yo[dy * ow..dy * ow + ow];
+        for (dx, o) in row.iter_mut().enumerate() {
+            *o = *y.get_unchecked((base + my.kx * my.xm[dx] as isize) as usize);
         }
     }
-    let (cw, ch, csw, csh) = (ow / 2, oh / 2, sw / 2, sh / 2);
-    let base = ow * oh;
-    for dy in 0..ch {
-        for dx in 0..cw {
-            let (sx, sy) = match ss.rot {
-                90 => (dy, csh - 1 - dx),
-                270 => (csw - 1 - dy, dx),
-                180 => (csw - 1 - dx, csh - 1 - dy),
-                _ => (dx, dy),
-            };
-            let iu = sy * us + sx * ups;
-            let iv = sy * vs + sx * vps;
-            let o = base + dy * ow + dx * 2;
-            if iu < u.len() && iv < v.len() {
-                out[o] = u[iu];
-                out[o + 1] = v[iv];
-            }
+    let (cw2, ch2) = (ow / 2, oh / 2);
+    for dy in 0..ch2 {
+        let bu = mu.i0 + mu.ky * mu.ym[dy] as isize;
+        let bv = mv.i0 + mv.ky * mv.ym[dy] as isize;
+        let row = &mut uvo[dy * ow..dy * ow + cw2 * 2];
+        for dx in 0..cw2 {
+            row[dx * 2] = *u.get_unchecked((bu + mu.kx * mu.xm[dx] as isize) as usize);
+            row[dx * 2 + 1] = *v.get_unchecked((bv + mv.kx * mv.xm[dx] as isize) as usize);
         }
     }
     let mut ts: i64 = 0;
@@ -490,7 +574,10 @@ pub struct OpenOpts {
 
 pub struct StreamOpts {
     pub res: i32,
-    pub orient: i32,
+    /// tỉ lệ khung hình ra (rộng, cao): (16,9) ngang, (9,16) dọc, (4,3), (1,1)...
+    pub ratio: (i32, i32),
+    /// xoay thêm 180° (cầm máy ngược)
+    pub flip: bool,
     pub fps: i32,
     pub vbr_kbps: i32,
     pub hevc: bool,
@@ -555,6 +642,61 @@ fn largest_under(list: &[(i32, i32)], max_area: i64) -> Option<(i32, i32)> {
     list.iter().filter(|s| s.0 as i64 * s.1 as i64 <= max_area).max_by_key(|s| s.0 as i64 * s.1 as i64).cloned()
 }
 
+/// Kích thước khung stream (rộng, cao) theo tỉ lệ và cạnh ngắn (480/720/1080).
+fn stream_dims(so: &StreamOpts) -> (i32, i32) {
+    let th = [480i64, 720, 1080][so.res.clamp(0, 2) as usize];
+    let (a, b) = (so.ratio.0.max(1) as i64, so.ratio.1.max(1) as i64);
+    let long = ((th * a.max(b) / a.min(b)) as i32) & !1;
+    if a >= b {
+        (long, th as i32)
+    } else {
+        (th as i32, long)
+    }
+}
+
+/// Kế hoạch lấy khung cho stream: chọn khung YUV của camera, vùng cắt giữa và kích thước ra.
+struct SPlan {
+    sw: i32,
+    sh: i32,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    ch: i32,
+    ow: i32,
+    oh: i32,
+    rot: i32,
+}
+
+fn plan_stream(yuv: &[(i32, i32)], ow: i32, oh: i32, rot: i32) -> SPlan {
+    let (lw, lh) = if rot == 90 || rot == 270 { (oh, ow) } else { (ow, oh) };
+    let crop_of = |w: i32, h: i32| -> (i32, i32) {
+        if (w as i64) * (lh as i64) >= (h as i64) * (lw as i64) {
+            ((((h as i64) * (lw as i64) / (lh as i64)) as i32) & !1, h & !1)
+        } else {
+            (w & !1, (((w as i64) * (lh as i64) / (lw as i64)) as i32) & !1)
+        }
+    };
+    let mut best: Option<((i64, i64, i64), (i32, i32))> = None;
+    for &(w, h) in yuv {
+        if w < 2 || h < 2 {
+            continue;
+        }
+        let (cw, ch) = crop_of(w, h);
+        if cw < 2 || ch < 2 {
+            continue;
+        }
+        let area = cw as i64 * ch as i64;
+        // đủ độ phân giải (không phải phóng to) ưu tiên trước, rồi vùng cắt nhỏ nhất, rồi khung nguồn nhỏ nhất
+        let key = if cw >= lw && ch >= lh { (0i64, area, w as i64 * h as i64) } else { (1i64, -area, w as i64 * h as i64) };
+        if best.as_ref().map(|b| key < b.0).unwrap_or(true) {
+            best = Some((key, (w, h)));
+        }
+    }
+    let (w, h) = best.map(|b| b.1).unwrap_or((1280, 720));
+    let (cw, ch) = crop_of(w, h);
+    SPlan { sw: w, sh: h, cx: ((w - cw) / 2) & !1, cy: ((h - ch) / 2) & !1, cw, ch, ow, oh, rot }
+}
+
 fn rtime() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
@@ -564,6 +706,8 @@ pub struct Camera {
     pub sh: Arc<Shared>,
     pub info: Info,
     pub ctl: Ctl,
+    /// vùng khung xem trước nằm trong khung camera (chuẩn hoá 0..1: x, y, rộng, cao), dùng đổi toạ độ chạm lấy nét
+    pub pcrop: [f32; 4],
     pub video: bool,
     pub vsize: (i32, i32),
     pub jsize: (i32, i32),
@@ -604,6 +748,13 @@ pub struct Camera {
 
 impl Camera {
     pub fn open(o: OpenOpts) -> Result<Camera, String> {
+        let mut none: Option<StreamKeep> = None;
+        Camera::open_keep(o, &mut none)
+    }
+
+    /// Mở camera; nếu `keep` có luồng livestream đang chạy thì nối camera mới vào đúng luồng đó
+    /// (bộ mã hóa và kết nối RTMP giữ nguyên). Mở lỗi thì `keep` vẫn còn nguyên để thử lại.
+    pub fn open_keep(o: OpenOpts, keep: &mut Option<StreamKeep>) -> Result<Camera, String> {
         unsafe {
             let mgr = ACameraManager_create();
             if mgr.is_null() {
@@ -704,19 +855,38 @@ impl Camera {
                 };
                 pick((aspect.0 as i64, aspect.1 as i64)).or_else(|| pick((16, 9))).unwrap_or(if o.wide { (1920, 1080) } else { (1440, 1080) })
             };
-            let ssize: (i32, i32) = if let Some(so) = &o.stream {
-                let th = [480, 720, 1080][so.res.clamp(0, 2) as usize];
-                yuv.iter()
-                    .cloned()
-                    .filter(|s| s.1 == th && (s.0 as i64 * 9 - s.1 as i64 * 16).abs() <= 16)
-                    .max_by_key(|s| s.0)
-                    .or_else(|| yuv.iter().cloned().filter(|s| s.1 <= th && (s.0 as i64 * 9 - s.1 as i64 * 16).abs() <= 16).max_by_key(|s| s.0 as i64 * s.1 as i64))
-                    .unwrap_or((1280, 720))
+            // livestream: tỉ lệ ra → khung camera + vùng cắt + kích thước ra
+            let splan: Option<SPlan> = if let Some(so) = &o.stream {
+                let (ow, oh) = match keep.as_ref() {
+                    Some(k) => (k.ow, k.oh),
+                    None => stream_dims(so),
+                };
+                let mut rot = if oh > ow { info.sensor_ori } else { 0 };
+                if so.flip {
+                    rot = (rot + 180) % 360;
+                }
+                Some(plan_stream(&yuv, ow, oh, rot))
             } else {
-                (0, 0)
+                None
             };
+            let ssize: (i32, i32) = splan.as_ref().map(|p| (p.sw, p.sh)).unwrap_or((0, 0));
             let refsz = if o.stream.is_some() { ssize } else if o.video { vsize } else { jsize };
             let psize = pick_aspect(&yuv, refsz, pmax).or_else(|| largest_under(&yuv, pmax)).unwrap_or((640, 480));
+            // vùng cắt của khung xem trước = cùng khung hình với stream (theo tỉ lệ so với khung nguồn)
+            let (pcrop_n, pc): ([f32; 4], [i32; 4]) = match &splan {
+                Some(sp) if sp.sw > 0 && sp.sh > 0 => {
+                    let fx = sp.cx as f64 / sp.sw as f64;
+                    let fy = sp.cy as f64 / sp.sh as f64;
+                    let fw = sp.cw as f64 / sp.sw as f64;
+                    let fh = sp.ch as f64 / sp.sh as f64;
+                    let pcw = (((fw * psize.0 as f64).round() as i32) & !1).clamp(2, psize.0 & !1);
+                    let pch = (((fh * psize.1 as f64).round() as i32) & !1).clamp(2, psize.1 & !1);
+                    let pcx = (((fx * psize.0 as f64).round() as i32) & !1).clamp(0, (psize.0 - pcw).max(0) & !1);
+                    let pcy = (((fy * psize.1 as f64).round() as i32) & !1).clamp(0, (psize.1 - pch).max(0) & !1);
+                    ([fx as f32, fy as f32, fw as f32, fh as f32], [pcx, pcy, pcw, pch])
+                }
+                _ => ([0.0, 0.0, 1.0, 1.0], [0, 0, psize.0 & !1, psize.1 & !1]),
+            };
 
             let sh = Arc::new(Shared {
                 frame: Mutex::new(Frame::default()),
@@ -733,6 +903,10 @@ impl Camera {
                 mirror: o.front,
                 pw: psize.0,
                 ph: psize.1,
+                pcx: pc[0],
+                pcy: pc[1],
+                pcw: pc[2],
+                pch: pc[3],
             });
             let ctx = Arc::into_raw(sh.clone());
             let ctxp = ctx as *mut c_void;
@@ -740,6 +914,7 @@ impl Camera {
                 sh,
                 info,
                 ctl: Ctl::default(),
+                pcrop: pcrop_n,
                 video: o.video || o.stream.is_some(),
                 vsize,
                 jsize,
@@ -778,7 +953,7 @@ impl Camera {
                 sactive: Arc::new(AtomicBool::new(false)),
             };
 
-            if AImageReader_new(psize.0, psize.1, FMT_YUV, 3, &mut c.rd_p) != 0 || c.rd_p.is_null() {
+            if AImageReader_new(psize.0, psize.1, FMT_YUV, 4, &mut c.rd_p) != 0 || c.rd_p.is_null() {
                 return Err(format!("Không tạo được reader xem trước {}x{}", psize.0, psize.1));
             }
             AImageReader_setImageListener(c.rd_p, &mut *c.lis_p);
@@ -833,30 +1008,42 @@ impl Camera {
                 }
             }
 
-            if let Some(so) = &o.stream {
-                let rot = match so.orient {
-                    0 => c.info.sensor_ori,
-                    1 => 0,
-                    _ => 180,
+            if let (Some(so), Some(sp)) = (&o.stream, &splan) {
+                let (tx, rx_new, active, first_ts) = match keep.as_ref() {
+                    Some(k) => (k.tx.clone(), None, k.active.clone(), k.first_ts.clone()),
+                    None => {
+                        let (tx, rx) = std::sync::mpsc::sync_channel::<stream::StreamFrame>(2);
+                        (tx, Some(rx), Arc::new(AtomicBool::new(false)), Arc::new(AtomicI64::new(-1)))
+                    }
                 };
-                let (ow, oh) = if rot == 90 || rot == 270 { (ssize.1, ssize.0) } else { (ssize.0, ssize.1) };
-                let enc = stream::BufEncoder::new(ow, oh, so.fps, so.vbr_kbps, so.hevc, so.iframe_s)?;
-                let (tx, rx) = std::sync::mpsc::sync_channel::<stream::StreamFrame>(2);
-                let active = Arc::new(AtomicBool::new(false));
-                let ssh = Arc::new(StreamShared { tx, active: active.clone(), rot, sw: ssize.0 as usize, sh: ssize.1 as usize, ow: ow as usize, oh: oh as usize, first_ts: AtomicI64::new(-1) });
+                if keep.is_none() {
+                    let enc = stream::BufEncoder::new(sp.ow, sp.oh, so.fps, so.vbr_kbps, so.hevc, so.iframe_s)?;
+                    c.benc = Some(enc);
+                    c.srx = rx_new;
+                }
+                let ssh = Arc::new(StreamShared {
+                    tx,
+                    active: active.clone(),
+                    rot: sp.rot,
+                    cx: sp.cx as usize,
+                    cy: sp.cy as usize,
+                    cw: sp.cw as usize,
+                    ch: sp.ch as usize,
+                    ow: sp.ow as usize,
+                    oh: sp.oh as usize,
+                    first_ts,
+                });
                 let ssp = Arc::into_raw(ssh);
                 c.ss = ssp;
                 c.lis_s = Box::new(ImgListener { context: ssp as *mut c_void, on_image_available: Some(on_stream) });
-                if AImageReader_new(ssize.0, ssize.1, FMT_YUV, 3, &mut c.rd_s) != 0 || c.rd_s.is_null() {
-                    return Err(format!("Không tạo được reader stream {}x{}", ssize.0, ssize.1));
+                if AImageReader_new(sp.sw, sp.sh, FMT_YUV, 4, &mut c.rd_s) != 0 || c.rd_s.is_null() {
+                    return Err(format!("Không tạo được reader stream {}x{}", sp.sw, sp.sh));
                 }
                 AImageReader_setImageListener(c.rd_s, &mut *c.lis_s);
                 AImageReader_getWindow(c.rd_s, &mut win_st);
                 if win_st.is_null() {
                     return Err("Không lấy được surface stream".into());
                 }
-                c.benc = Some(enc);
-                c.srx = Some(rx);
                 c.sactive = active;
             }
 
@@ -900,8 +1087,23 @@ impl Camera {
                 }
             }
             c.apply()?;
+            if let Some(k) = keep.take() {
+                c.sactive = k.active.clone();
+                c.streamer = Some(k.streamer);
+            }
             Ok(c)
         }
+    }
+
+    /// Lấy luồng livestream đang chạy ra khỏi camera (trước khi đóng camera để đổi trước/sau).
+    pub fn take_stream_keep(&mut self) -> Option<StreamKeep> {
+        let streamer = self.streamer.take()?;
+        if self.ss.is_null() {
+            self.streamer = Some(streamer);
+            return None;
+        }
+        let ss = unsafe { &*self.ss };
+        Some(StreamKeep { tx: ss.tx.clone(), active: ss.active.clone(), first_ts: ss.first_ts.clone(), streamer, ow: ss.ow as i32, oh: ss.oh as i32 })
     }
 
     fn capture_cb(&self) -> CaptureCb {
@@ -1024,6 +1226,8 @@ impl Camera {
 
     /// Chạm lấy nét: (nx,ny) là toạ độ chuẩn hoá 0..1 trong khung cảm biến (đã tính vùng crop).
     pub fn focus_at(&mut self, nx: f32, ny: f32) {
+        let nx = self.pcrop[0] + nx.clamp(0.0, 1.0) * self.pcrop[2];
+        let ny = self.pcrop[1] + ny.clamp(0.0, 1.0) * self.pcrop[3];
         self.ctl.af = Some((nx, ny));
         let _ = self.apply();
         unsafe {
@@ -1183,8 +1387,8 @@ impl Drop for Camera {
     fn drop(&mut self) {
         unsafe {
             self.sh.closing.store(true, Ordering::SeqCst);
-            self.sactive.store(false, Ordering::SeqCst);
             if let Some(s) = self.streamer.take() {
+                self.sactive.store(false, Ordering::SeqCst);
                 s.stop();
             }
             if let Some(r) = self.rec.take() {

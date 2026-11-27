@@ -32,6 +32,8 @@ TikTok: chọn/cắt nhạc, đổi tốc độ, ghép nhạc.
 - Ảnh/video lưu ở thư viện máy: DCIM/Csan. Tệp tạm và config.txt nằm ở `Android/data/zanq.fun.csar/files/`.
 
 ## Livestream (chế độ STREAM)
+Bitrate video chỉ nhập tay (Cài đặt → Livestream) và là mức trần, không thanh trượt. Tỉ lệ: 16:9, 9:16, 4:3, 3:4, 1:1, 3:2, 2:3. Đổi camera trước/sau khi đang phát không ngắt luồng (hình đứng ~1 giây).
+
 Giao thức: `rtmp://host[:1935]/app` và `rtmps://host[:443]/app`; khoá luồng nhập riêng hoặc nối sau URL (`.../app/KEY`).
 H.265 dùng Enhanced RTMP (FourCC `hvc1`) nên máy chủ phải hỗ trợ (YouTube, Twitch Enhanced Broadcasting…); nginx-rtmp bản gốc thì dùng H.264.
 Cần để màn hình sáng và app ở nền trước khi phát. WHIP/WebRTC chưa có.
