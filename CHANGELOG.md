@@ -1,6 +1,14 @@
 # Lịch sử cập nhật
 Phiên bản ghi theo ngày cập nhật: `DDMM.YY` (14/11/2026 → `1411.26`).
 
+## 2711.26.1 — 27/11/2026
+- Sửa giật/lag xem trước và vòng tự động lấy nét/phơi sáng/cân bằng trắng bị trễ:
+  - Chuyển YUV→RGB: duyệt theo ô 32x32 (trước đây khi xoay 90° đọc nguồn theo cột, trượt cache liên tục), chạy 2 luồng (trước đây `nth = 1` dù chú thích nói song song), thống kê độ sáng chuyển sang lấy mẫu thưa 1/16 trên mặt phẳng Y thay vì kiểm tra từng điểm ảnh. Callback giữ ImageReader ngắn hơn nên camera không bị giảm tốc.
+  - Giao diện không còn `request_repaint()` vô điều kiện mỗi khung (vẽ lại 60/120 lần/giây dù không có gì đổi): luồng camera tự yêu cầu vẽ khi có khung mới, chỉ vẽ liên tục khi zoom/vòng lấy nét/cài đặt đang mở, còn lại nhịp nền 33 ms.
+  - Zoom: mỗi bước làm mượt trước đây gọi một `setRepeatingRequest` (binder, chặn luồng UI) mỗi khung hình; giờ tối đa ~30 lần/giây (giá trị cuối vẫn được áp dụng) và bỏ qua khi zoom không đổi.
+  - Chế độ đêm tự động: thêm độ trễ (bật khi luma < 70, tắt khi > 120). Trước đây bật/tắt luân phiên mỗi 0,6 giây (EV ±1,5 làm phơi sáng nhấp nháy + dựng lại request liên tục).
+  - Chạm lấy nét: huỷ khoá AF cũ trước khi quét (AF_TRIGGER_CANCEL rồi START) và sau 4 giây tự bỏ vùng AF/AE + huỷ khoá để AF liên tục chạy lại. Trước đây vùng AF/AE và khoá AF giữ mãi sau lần chạm đầu.
+
 ## 2711.26 — 27/11/2026
 - Livestream: bỏ thanh trượt bitrate. Chỉ còn ô nhập tay (100–100000 kbps) trong Cài đặt → Livestream; nút bitrate ở hàng tuỳ chọn giờ chỉ mở Cài đặt. Giá trị đặt là **mức trần**: bộ mã hóa chạy CBR cố định kèm `max-bitrate`, và luồng phát đo mỗi giây, nếu vượt thì tự hạ mục tiêu của bộ mã hóa, dưới mức thì nâng lại (không quá mức đã đặt). Số kbps hiện trên hình là kbps video.
 - Livestream: thêm chọn tỉ lệ khung hình 16:9, 9:16, 4:3, 3:4, 1:1, 3:2, 2:3 (Cài đặt → Livestream và nút ở hàng tuỳ chọn). Khung camera được cắt giữa đúng tỉ lệ rồi xoay/co về kích thước ra; xem trước cũng cắt đúng khung đang phát. Thay cho mục "Hướng stream" (cũ: Dọc = 9:16, Ngang = 16:9; thêm ô "Xoay 180°" thay cho "Ngang ngược"). Cài đặt cũ tự được chuyển.

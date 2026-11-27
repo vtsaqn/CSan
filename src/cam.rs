@@ -225,6 +225,8 @@ pub struct Shared {
     pub lost: AtomicBool,
     pub closing: AtomicBool,
     /// thống kê cảnh (từ khung xem trước): độ sáng TB 0..255, tỉ lệ tối/sáng theo ‰
+    /// ngữ cảnh egui: luồng camera gọi request_repaint khi có khung xem trước mới (UI khỏi phải vẽ liên tục)
+    pub repaint: Mutex<Option<eframe::egui::Context>>,
     pub luma: AtomicU32,
     pub dark_pm: AtomicU32,
     pub bright_pm: AtomicU32,
@@ -357,60 +359,82 @@ unsafe fn convert(sh: &Shared, img: *mut AImage) {
     let mirror = sh.mirror;
     let (cxi, cyi) = (cx as isize, cy as isize);
     let mut out: Vec<Color32> = vec![Color32::BLACK; dw * dh];
-    let nth = 1usize;
+    // 2 dải hàng chạy song song: giữ ImageReader ngắn hơn → camera không bị giảm tốc, vòng AF/AE/AWB không trễ.
+    let nth = if dh >= 480 { 2usize } else { 1usize };
     let rows_per = (dh + nth - 1) / nth;
-    let (mut sum, mut dark, mut bright) = (0u64, 0u32, 0u32);
+    // Duyệt theo ô TILE x TILE: khi xoay 90/270 độ, đọc nguồn theo cột rất tốn cache nếu duyệt từng hàng đích;
+    // theo ô thì mỗi dòng cache của nguồn được dùng hết trước khi bị đẩy ra.
+    const TILE: usize = 32;
     std::thread::scope(|sc| {
-        let mut hs = Vec::new();
         for (bi, chunk) in out.chunks_mut(rows_per * dw).enumerate() {
             let y0 = bi * rows_per;
-            hs.push(sc.spawn(move || {
-                let (mut s1, mut d1, mut b1) = (0u64, 0u32, 0u32);
-                for (ri, row) in chunk.chunks_mut(dw).enumerate() {
-                    let dy = (y0 + ri) as isize;
-                    for (dx, o) in row.iter_mut().enumerate() {
-                        let mx = (if mirror { dw - 1 - dx } else { dx }) as isize;
-                        let px = p0x + pxx * mx + pxy * dy;
-                        let py = p0y + pyx * mx + pyy * dy;
-                        let ax = (cxi + px) as usize;
-                        let ay = (cyi + py) as usize;
-                        let yv = *y.get_unchecked(ay * ys + ax) as i32;
-                        let iu = (ay >> 1) * us + (ax >> 1) * ups;
-                        let iv = (ay >> 1) * vs + (ax >> 1) * vps;
-                        let uv = *u.get_unchecked(iu) as i32 - 128;
-                        let vv = *v.get_unchecked(iv) as i32 - 128;
-                        s1 += yv as u64;
-                        if yv < 25 {
-                            d1 += 1;
-                        } else if yv > 235 {
-                            b1 += 1;
+            sc.spawn(move || {
+                let nrows = chunk.len() / dw;
+                let mut by = 0usize;
+                while by < nrows {
+                    let by_end = (by + TILE).min(nrows);
+                    let mut bx = 0usize;
+                    while bx < dw {
+                        let bx_end = (bx + TILE).min(dw);
+                        for ri in by..by_end {
+                            let dy = (y0 + ri) as isize;
+                            let row = &mut chunk[ri * dw..ri * dw + dw];
+                            for dx in bx..bx_end {
+                                let mx = (if mirror { dw - 1 - dx } else { dx }) as isize;
+                                let px = p0x + pxx * mx + pxy * dy;
+                                let py = p0y + pyx * mx + pyy * dy;
+                                let ax = (cxi + px) as usize;
+                                let ay = (cyi + py) as usize;
+                                let yv = *y.get_unchecked(ay * ys + ax) as i32;
+                                let iu = (ay >> 1) * us + (ax >> 1) * ups;
+                                let iv = (ay >> 1) * vs + (ax >> 1) * vps;
+                                let uv = *u.get_unchecked(iu) as i32 - 128;
+                                let vv = *v.get_unchecked(iv) as i32 - 128;
+                                let r = yv + ((1436 * vv) >> 10);
+                                let g = yv - ((352 * uv + 731 * vv) >> 10);
+                                let b = yv + ((1814 * uv) >> 10);
+                                *row.get_unchecked_mut(dx) = Color32::from_rgb(r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8);
+                            }
                         }
-                        let r = yv + ((1436 * vv) >> 10);
-                        let g = yv - ((352 * uv + 731 * vv) >> 10);
-                        let b = yv + ((1814 * uv) >> 10);
-                        *o = Color32::from_rgb(r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8);
+                        bx = bx_end;
                     }
+                    by = by_end;
                 }
-                (s1, d1, b1)
-            }));
-        }
-        for h in hs {
-            if let Ok((a, b, c)) = h.join() {
-                sum += a;
-                dark += b;
-                bright += c;
-            }
+            });
         }
     });
-    let n = (dw * dh) as u64;
+    // Thống kê cảnh (độ sáng TB, tỉ lệ tối/sáng) không phụ thuộc phép xoay/lật → lấy mẫu thưa 1/16 trực tiếp trên mặt phẳng Y.
+    let (mut sum, mut dark, mut bright, mut n) = (0u64, 0u32, 0u32, 0u64);
+    let mut sy = cy;
+    while sy < cy + ch {
+        let rowp = sy * ys;
+        let mut sx = cx;
+        while sx < cx + cw {
+            let yv = *y.get_unchecked(rowp + sx);
+            sum += yv as u64;
+            if yv < 25 {
+                dark += 1;
+            } else if yv > 235 {
+                bright += 1;
+            }
+            n += 1;
+            sx += 4;
+        }
+        sy += 4;
+    }
     sh.luma.store((sum / n.max(1)) as u32, Ordering::Relaxed);
-    sh.dark_pm.store(dark * 1000 / n.max(1) as u32, Ordering::Relaxed);
-    sh.bright_pm.store(bright * 1000 / n.max(1) as u32, Ordering::Relaxed);
+    sh.dark_pm.store((dark as u64 * 1000 / n.max(1)) as u32, Ordering::Relaxed);
+    sh.bright_pm.store((bright as u64 * 1000 / n.max(1)) as u32, Ordering::Relaxed);
     let newf = Frame { w: dw, h: dh, pixels: out };
     let mut _old: Option<Frame> = None;
     if let Ok(mut f) = sh.frame.lock() {
         _old = Some(std::mem::replace(&mut *f, newf));
         sh.seq.fetch_add(1, Ordering::SeqCst);
+    }
+    if let Ok(g) = sh.repaint.lock() {
+        if let Some(c) = g.as_ref() {
+            c.request_repaint();
+        }
     }
 }
 
@@ -744,6 +768,8 @@ pub struct Camera {
     srx: Option<std::sync::mpsc::Receiver<stream::StreamFrame>>,
     streamer: Option<stream::Streamer>,
     sactive: Arc<AtomicBool>,
+    /// hết hạn này thì bỏ vùng AF/AE đã chạm + huỷ khoá lấy nét để AF liên tục chạy lại
+    af_until: Option<Instant>,
 }
 
 impl Camera {
@@ -896,6 +922,7 @@ impl Camera {
                 closing: AtomicBool::new(false),
                 metas: Mutex::new(Vec::new()),
                 torch_shot: AtomicBool::new(false),
+                repaint: Mutex::new(None),
                 luma: AtomicU32::new(128),
                 dark_pm: AtomicU32::new(0),
                 bright_pm: AtomicU32::new(0),
@@ -951,6 +978,7 @@ impl Camera {
                 srx: None,
                 streamer: None,
                 sactive: Arc::new(AtomicBool::new(false)),
+                af_until: None,
             };
 
             if AImageReader_new(psize.0, psize.1, FMT_YUV, 4, &mut c.rd_p) != 0 || c.rd_p.is_null() {
@@ -1220,24 +1248,55 @@ impl Camera {
     }
 
     pub fn set_zoom(&mut self, z: f32) {
-        self.ctl.zoom = z.clamp(1.0, self.info.max_zoom.max(1.0));
+        let nz = z.clamp(1.0, self.info.max_zoom.max(1.0));
+        if (nz - self.ctl.zoom).abs() < 1e-4 {
+            return;
+        }
+        self.ctl.zoom = nz;
         let _ = self.apply();
     }
 
+    /// Gửi một yêu cầu một lần (không lặp) với AF_TRIGGER = trig (1 = bắt đầu, 2 = huỷ).
+    unsafe fn af_trigger(&mut self, trig: u8) {
+        let tpl = if self.video { TEMPLATE_RECORD } else { TEMPLATE_PREVIEW };
+        if let Ok(mut r) = self.make_req(tpl, false) {
+            ACaptureRequest_addTarget(r, self.tgt_p);
+            ACaptureRequest_setEntry_u8(r, T_AF_TRIGGER, 1, &trig);
+            ACameraCaptureSession_capture(self.sess, null_mut(), 1, &mut r, null_mut());
+            ACaptureRequest_free(r);
+        }
+    }
+
     /// Chạm lấy nét: (nx,ny) là toạ độ chuẩn hoá 0..1 trong khung cảm biến (đã tính vùng crop).
+    /// Huỷ khoá cũ rồi mới bắt đầu quét mới; sau ~4 giây tự trả về AF liên tục (xem focus_tick).
     pub fn focus_at(&mut self, nx: f32, ny: f32) {
         let nx = self.pcrop[0] + nx.clamp(0.0, 1.0) * self.pcrop[2];
         let ny = self.pcrop[1] + ny.clamp(0.0, 1.0) * self.pcrop[3];
         self.ctl.af = Some((nx, ny));
         let _ = self.apply();
+        if self.sess.is_null() {
+            return;
+        }
         unsafe {
-            let tpl = if self.video { TEMPLATE_RECORD } else { TEMPLATE_PREVIEW };
-            if let Ok(mut r) = self.make_req(tpl, false) {
-                ACaptureRequest_addTarget(r, self.tgt_p);
-                let t: u8 = 1;
-                ACaptureRequest_setEntry_u8(r, T_AF_TRIGGER, 1, &t);
-                ACameraCaptureSession_capture(self.sess, null_mut(), 1, &mut r, null_mut());
-                ACaptureRequest_free(r);
+            self.af_trigger(2);
+            self.af_trigger(1);
+        }
+        self.af_until = Some(Instant::now() + Duration::from_secs(4));
+    }
+
+    /// Gọi định kỳ: hết hạn chạm lấy nét thì bỏ vùng AF/AE, huỷ khoá AF. Trước đây vùng này và khoá AF
+    /// giữ mãi sau lần chạm đầu → máy không lấy nét lại khi cảnh đổi, đo sáng kẹt ở một điểm.
+    pub fn focus_tick(&mut self) {
+        if let Some(t) = self.af_until {
+            if Instant::now() >= t {
+                self.af_until = None;
+                self.ctl.af = None;
+                if !self.sess.is_null() && !self.dev.is_null() {
+                    unsafe {
+                        self.af_trigger(2);
+                    }
+                    let _ = self.apply();
+                }
             }
         }
     }

@@ -304,6 +304,7 @@ struct App {
     tracks: Vec<media::Track>,
     zoom_t: f32,
     zoom_c: f32,
+    last_zoom_at: Instant,
     device: (String, String),
     hevc_ok: bool,
     br_txt: String,
@@ -371,6 +372,7 @@ impl App {
             tracks: Vec::new(),
             zoom_t: 1.0,
             zoom_c: 1.0,
+            last_zoom_at: Instant::now(),
             device,
             hevc_ok: stream::codec_supported(true),
             st_last_bytes: 0,
@@ -460,7 +462,11 @@ impl App {
         let s = self.s.clone();
         if let Some(c) = self.cam.as_mut() {
             let luma = c.sh.luma.load(Ordering::Relaxed);
-            let night = !c.video && (s.night == 2 || (s.night == 1 && luma < 70));
+            // Tự động: có độ trễ (hysteresis). Chế độ đêm tăng EV nên khung xem trước sáng lên; nếu tắt ngay khi
+            // luma > 70 thì cảnh tối lại → bật → tắt ... mỗi 0,6 s (phơi sáng nhấp nháy, liên tục dựng lại request).
+            let auto_night = if c.ctl.night { luma < 120 } else { luma < 70 };
+            let night = !c.video && (s.night == 2 || (s.night == 1 && auto_night));
+            c.focus_tick();
             let eis = if c.video { s.eis as u8 } else { 0 };
             let low = c.video && s.vlow == 1;
             if night != c.ctl.night || eis != c.ctl.eis || low != c.ctl.low_fps {
@@ -1170,7 +1176,20 @@ fn combo(ui: &mut egui::Ui, label: &str, val: &mut i32, items: &[&str]) -> bool 
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint();
+        // Không vẽ liên tục theo tần số quét (60/120 Hz) nữa: luồng camera tự yêu cầu vẽ khi có khung mới;
+        // chỉ vẽ liên tục khi đang có hoạt ảnh; còn lại nhịp nền 33 ms để tick() vẫn chạy đều.
+        if let Some(c) = &self.cam {
+            if let Ok(mut g) = c.sh.repaint.lock() {
+                if g.is_none() {
+                    *g = Some(ctx.clone());
+                }
+            }
+        }
+        if (self.zoom_t - self.zoom_c).abs() > 0.0005 || self.focus_ring.is_some() || self.settings_open {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(33));
+        }
         self.tick();
         self.upload_frame(ctx);
 
@@ -1211,8 +1230,12 @@ impl eframe::App for App {
                 nz = self.zoom_t;
             }
             if (nz - self.zoom_c).abs() > 0.0005 {
-                self.zoom_c = nz;
-                c.set_zoom(nz);
+                // mỗi set_zoom = một setRepeatingRequest (binder, chặn luồng UI): tối đa ~30 lần/giây, giá trị cuối luôn được áp dụng
+                if nz == self.zoom_t || self.last_zoom_at.elapsed() >= Duration::from_millis(33) {
+                    self.zoom_c = nz;
+                    self.last_zoom_at = Instant::now();
+                    c.set_zoom(nz);
+                }
             }
         } else {
             self.zoom_t = 1.0;
